@@ -1,0 +1,57 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="heading">
+  <div>
+    <p class="eyebrow">People directory</p>
+    <h1>{{ 'Edit person' if person else 'Add person' }}</h1>
+  </div>
+</div>
+<section class="card form-card">
+  <form method="post" class="form-grid">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label>First name <em>required</em>
+      <input name="first_name" required value="{{ person.first_name if person else '' }}">
+    </label>
+    <label>Last name <em>required</em>
+      <input name="last_name" required value="{{ person.last_name if person else '' }}">
+    </label>
+    <label>Member type <em>required</em>
+      <select name="member_type" required>
+        <option value="Member" {{ 'selected' if person and person.member_type == 'Member' }}>Member</option>
+        <option value="Non-member" {{ 'selected' if person and person.member_type == 'Non-member' }}>Non-member</option>
+      </select>
+    </label>
+    <label>Phone
+      <input name="phone" type="tel" value="{{ person.phone if person else '' }}">
+    </label>
+    <label>Email
+      <input name="email" type="email" value="{{ person.email if person else '' }}">
+    </label>
+    <label class="span-2">Address line 1
+      <input name="address_line1" value="{{ person.address_line1 if person else '' }}" autocomplete="address-line1">
+    </label>
+    <label class="span-2">Address line 2
+      <input name="address_line2" value="{{ person.address_line2 if person else '' }}" autocomplete="address-line2" placeholder="Apt, suite, etc. (optional)">
+    </label>
+    <label>City
+      <input name="city" value="{{ person.city if person else '' }}" autocomplete="address-level2">
+    </label>
+    <label>State
+      <input name="state" list="us-states" maxlength="2" value="{{ person.state if person else '' }}" placeholder="NJ" autocomplete="address-level1" aria-describedby="state-help">
+      <datalist id="us-states">
+        {% for code, name in us_states %}
+        <option value="{{ code }}">{{ name }}</option>
+        {% endfor %}
+      </datalist>
+      <small id="state-help" class="field-hint">Type a 2-letter code or pick from the list.</small>
+    </label>
+    <label>ZIP code
+      <input name="zip_code" value="{{ person.zip_code if person else '' }}" inputmode="numeric" placeholder="08812" autocomplete="postal-code" pattern="\d{5}(-\d{4})?">
+    </label>
+    <div class="form-actions">
+      <a class="button secondary" href="{{ url_for('people') }}">Cancel</a>
+      <button class="button" type="submit">Save person</button>
+    </div>
+  </form>
+</section>
+{% endblock %}

@@ -1,0 +1,66 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="heading">
+  <div>
+    <p class="eyebrow">Guidance and support</p>
+    <h1>Help</h1>
+    <p class="muted">Answers for common finance workflows and a way to share feedback.</p>
+  </div>
+</div>
+<div class="admin-grid">
+  <section class="card form-card">
+    <h2>Common tasks</h2>
+    <details>
+      <summary>Import people from CSV</summary>
+      <p>Open People, choose Import CSV, download the template if you need it, and upload a CSV file saved from Excel or Google Sheets.</p>
+      <p>Expected columns:</p>
+      <p><code>first_name, last_name, member_type, email, phone, address_line1, address_line2, city, state, zip_code</code></p>
+      <p><code>member_type</code> must be <strong>Member</strong> or <strong>Non-member</strong>. <code>state</code> is a 2-letter code such as NJ.</p>
+      <p>Example with two records:</p>
+      <pre>first_name,last_name,member_type,email,phone,address_line1,address_line2,city,state,zip_code
+Ada,Member,Member,ada@example.org,555-0100,170 Greenbrook Rd.,,Green Brook,NJ,08812
+Ben,Visitor,Non-member,ben@example.org,555-0101,12 Main St,Apt 2B,Plainfield,NJ,07060</pre>
+    </details>
+    <details>
+      <summary>Import contributions from CSV</summary>
+      <p>Open Contributions, choose Import CSV, download the template if you need it, and upload a CSV file saved from Excel or Google Sheets. Contributors must already exist under People.</p>
+      <p>Expected columns:</p>
+      <p><code>date, first_name, last_name, email, fund, amount, method, fiscal_year, reference, note</code></p>
+      <p><code>method</code> must be <strong>Check</strong>, <strong>Cash</strong>, <strong>Online</strong>, or <strong>Other</strong>. Dates use YYYY-MM-DD. Include <code>email</code> when two people share the same name. <code>fiscal_year</code> can be left blank if the date falls in an open year.</p>
+      <p>Example with two records:</p>
+      <pre>date,first_name,last_name,email,fund,amount,method,fiscal_year,reference,note
+2026-09-01,Ada,Member,ada@example.org,General Fund,40.00,Check,2026,1001,
+2026-09-02,Ben,Visitor,ben@example.org,Missions Fund,15.50,Cash,2026,,Sunday gift</pre>
+    </details>
+    <details>
+      <summary>Record a contribution</summary>
+      <p>Choose Contributions, then Record contribution. Select a contributor, open fiscal year, fund, and payment method.</p>
+    </details>
+    <details>
+      <summary>Create acknowledgment letters</summary>
+      <p>Open Reports and choose a person’s PDF link. Check the letter before distribution.</p>
+    </details>
+    <details>
+      <summary>Close a fiscal year</summary>
+      <p>An administrator can close the year under Administration. Review entries and totals first.</p>
+    </details>
+  </section>
+  <section class="card form-card">
+    <h2>Send feedback</h2>
+    <form method="post" class="form-stack">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label>Category
+        <select name="category">
+          <option>Suggestion</option>
+          <option>Problem</option>
+          <option>Data question</option>
+          <option>Access request</option>
+        </select>
+      </label>
+      <label>Subject<input name="subject" required></label>
+      <label>Description<textarea name="message" rows="6" required></textarea></label>
+      <button class="button" type="submit">Send feedback</button>
+    </form>
+  </section>
+</div>
+{% endblock %}

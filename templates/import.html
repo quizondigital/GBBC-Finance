@@ -1,0 +1,18 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="heading">
+  <div>
+    <p class="eyebrow">People directory</p>
+    <h1>Import people</h1>
+    <p class="muted">CSV columns: first_name, last_name, member_type, email, phone, address_line1, address_line2, city, state, zip_code. Member type is Member or Non-member. State is a 2-letter code (for example NJ).</p>
+  </div>
+</div>
+<p><a href="{{ url_for('people_template') }}">Download CSV template</a></p>
+<section class="card form-card">
+  <form method="post" enctype="multipart/form-data" class="form-stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label>CSV file<input type="file" name="file" accept=".csv,text/csv" required></label>
+    <button class="button" type="submit">Import people</button>
+  </form>
+</section>
+{% endblock %}
