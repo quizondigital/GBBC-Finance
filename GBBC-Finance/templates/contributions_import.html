@@ -1,0 +1,18 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="heading">
+  <div>
+    <p class="eyebrow">Giving records</p>
+    <h1>Import contributions</h1>
+    <p class="muted">CSV columns: date, first_name, last_name, email (optional), fund, amount, method, fiscal_year (optional if the date falls in an open year), reference, note. Method must be Check, Cash, Online, or Other. People must already exist in the directory.</p>
+  </div>
+</div>
+<p><a href="{{ url_for('gifts_template') }}">Download CSV template</a></p>
+<section class="card form-card">
+  <form method="post" enctype="multipart/form-data" class="form-stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label>CSV file<input type="file" name="file" accept=".csv,text/csv" required></label>
+    <button class="button" type="submit">Import contributions</button>
+  </form>
+</section>
+{% endblock %}

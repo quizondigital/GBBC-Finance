@@ -1,0 +1,57 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="heading">
+  <div>
+    <p class="eyebrow">Import results</p>
+    <h1>{{ report.title }}</h1>
+    <p class="muted">Review how many rows loaded and which ones need attention.</p>
+  </div>
+  <div class="actions">
+    <a class="button secondary" href="{{ url_for(report.back_endpoint) }}">Import again</a>
+    <a class="button" href="{{ url_for(report.list_endpoint) }}">{{ report.list_label }}</a>
+  </div>
+</div>
+
+<div class="metrics">
+  <div class="metric tinted"><span>Loaded successfully</span><strong>{{ report.success_count }}</strong><small>Records saved</small></div>
+  <div class="metric"><span>Failed to load</span><strong>{{ report.failed_count }}</strong><small>Rows skipped</small></div>
+</div>
+
+{% if report.file_error %}
+<section class="card form-card">
+  <h2>File could not be imported</h2>
+  <p class="muted">{{ report.file_error }}</p>
+</section>
+{% endif %}
+
+{% if report.failures %}
+<section class="card">
+  <div class="card-head">
+    <h2>Failed records</h2>
+    <p>These rows were not loaded. Download the list, fix the issues, and import again.</p>
+  </div>
+  <p><a class="button secondary" href="{{ url_for('import_report_failures') }}">Download failed rows CSV</a></p>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>Row</th><th>Reason</th><th>Record</th></tr>
+      </thead>
+      <tbody>
+        {% for item in report.failures %}
+        <tr>
+          <td>{{ item.row }}</td>
+          <td>{{ item.reason }}</td>
+          <td><code>{{ item.preview }}</code></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% elif not report.file_error %}
+<section class="card form-card">
+  <h2>All rows loaded</h2>
+  <p class="muted">No failed records were found in this import.</p>
+</section>
+{% endif %}
+{% endblock %}
