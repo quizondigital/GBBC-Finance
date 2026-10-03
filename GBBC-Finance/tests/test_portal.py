@@ -208,6 +208,18 @@ def test_person_delete_from_list(client):
     with client.application.app_context():
         assert db.session.get(Person, person_id) is None
 
+def test_gift_delete_from_list(client):
+    login(client, 'sally@example.org')
+    with client.application.app_context():
+        db.session.add(Gift(person_id=1, fiscal_year_id=1, fund_id=1, date=date(2026,9,1), amount=25, method='Check', entered_by_id=1))
+        db.session.commit()
+    listing = client.get('/contributions').data
+    assert b'Delete' in listing
+    deleted = client.post('/contributions/1/delete', data={'csrf_token': token(client)}, follow_redirects=True)
+    assert b'Contribution deleted.' in deleted.data
+    with client.application.app_context():
+        assert db.session.get(Gift, 1) is None
+
 def test_reconciliation_is_audited_and_role_limited(client):
     login(client, 'sally@example.org')
     with client.application.app_context():
