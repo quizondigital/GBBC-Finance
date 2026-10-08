@@ -703,6 +703,7 @@ def create_app(test_config=None):
     @app.route('/contributions')
     @require('gift_view')
     def contributions():
+        per_page = 25
         sort_keys = {
             'date': Gift.date,
             'contributor': (Person.last_name, Person.first_name),
@@ -718,6 +719,10 @@ def create_app(test_config=None):
         direction = request.args.get('dir', 'desc' if sort == 'date' else 'asc')
         if direction not in ('asc', 'desc'):
             direction = 'desc' if sort == 'date' else 'asc'
+        total = db.session.scalar(db.select(db.func.count()).select_from(Gift)) or 0
+        total_pages = max(1, (total + per_page - 1) // per_page)
+        page = request.args.get('page', 1, type=int) or 1
+        page = min(max(page, 1), total_pages)
         query = db.select(Gift)
         if sort == 'contributor':
             query = query.join(Person, Gift.person_id == Person.id)
@@ -728,8 +733,17 @@ def create_app(test_config=None):
             columns = (columns,)
         order = [col.desc() if direction == 'desc' else col.asc() for col in columns]
         order.append(Gift.id.desc() if direction == 'desc' else Gift.id.asc())
-        gifts = db.session.scalars(query.order_by(*order).limit(200)).all()
-        return render_template('contributions.html', gifts=gifts, sort=sort, direction=direction)
+        gifts = db.session.scalars(query.order_by(*order).offset((page - 1) * per_page).limit(per_page)).all()
+        return render_template(
+            'contributions.html',
+            gifts=gifts,
+            sort=sort,
+            direction=direction,
+            page=page,
+            total_pages=total_pages,
+            total=total,
+            per_page=per_page,
+        )
 
     @app.route('/contributions/import', methods=['GET', 'POST'])
     @require('gift_write')

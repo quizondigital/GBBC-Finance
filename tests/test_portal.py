@@ -192,6 +192,24 @@ def test_empty_csv_import_report(client):
     assert b'People import report' in response.data
     assert b'The file is empty.' in response.data
 
+def test_contributions_pagination(client):
+    login(client, 'sally@example.org')
+    with client.application.app_context():
+        gifts = [
+            Gift(person_id=1, fiscal_year_id=1, fund_id=1, date=date(2026, 1, 1 + (i % 28)), amount=10 + i, method='Cash', entered_by_id=1)
+            for i in range(30)
+        ]
+        db.session.add_all(gifts)
+        db.session.commit()
+    page1 = client.get('/contributions').data.decode()
+    assert 'aria-label="Contributions pages"' in page1
+    assert '>First<' in page1 and '>Last<' in page1
+    assert page1.count('<tr>') == 26  # header + 25 rows
+    assert 'page=2' in page1
+    page2 = client.get('/contributions?page=2').data.decode()
+    assert page2.count('<tr>') == 6  # header + 5 remaining
+    assert 'aria-current="page">2<' in page2
+
 def test_gift_delete_from_list(client):
     login(client, 'sally@example.org')
     with client.application.app_context():

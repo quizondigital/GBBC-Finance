@@ -7,6 +7,9 @@
   {%- endif -%}
   <th><a class="sort-link {{ 'active' if sort == column }}" href="{{ url_for('contributions', sort=column, dir=next_dir) }}">{{ label }}{% if sort == column %} <span class="sort-ind" aria-hidden="true">{{ '▼' if direction == 'desc' else '▲' }}</span>{% endif %}</a></th>
 {%- endmacro %}
+{% macro page_url(page_num) -%}
+  {{ url_for('contributions', sort=sort, dir=direction, page=page_num) }}
+{%- endmacro %}
 {% block content %}
 <div class="heading">
   <div>
@@ -65,5 +68,26 @@
       </tbody>
     </table>
   </div>
+  {% if total_pages > 1 %}
+  <nav class="pagination" aria-label="Contributions pages">
+    {% if page > 1 %}
+    <a class="page-link" href="{{ page_url(1) }}">First</a>
+    {% else %}
+    <span class="page-link disabled">First</span>
+    {% endif %}
+    {% for page_num in range(1, total_pages + 1) %}
+      {% if page_num == page %}
+      <span class="page-link current" aria-current="page">{{ page_num }}</span>
+      {% else %}
+      <a class="page-link" href="{{ page_url(page_num) }}">{{ page_num }}</a>
+      {% endif %}
+    {% endfor %}
+    {% if page < total_pages %}
+    <a class="page-link" href="{{ page_url(total_pages) }}">Last</a>
+    {% else %}
+    <span class="page-link disabled">Last</span>
+    {% endif %}
+  </nav>
+  {% endif %}
 </section>
 {% endblock %}
