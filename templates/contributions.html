@@ -53,6 +53,9 @@
             <form class="inline" method="post" action="{{ url_for('gift_reconcile', gift_id=gift.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="text-button" type="submit">{{ 'Unreconcile' if gift.reconciled else 'Reconcile' }}</button></form>
             <form class="inline" method="post" action="{{ url_for('gift_void', gift_id=gift.id) }}" onsubmit="return confirm('Void this contribution?')"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="text-button danger" type="submit">Void</button></form>
             {% endif %}
+            {% if gift.fiscal_year.is_open %}
+            <form class="inline" method="post" action="{{ url_for('gift_delete', gift_id=gift.id) }}" onsubmit="return confirm('Delete this contribution? This cannot be undone.')"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="text-button danger" type="submit">Delete</button></form>
+            {% endif %}
           </td>
           {% endif %}
         </tr>

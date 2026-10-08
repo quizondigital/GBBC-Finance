@@ -884,6 +884,20 @@ def create_app(test_config=None):
         gift.status = 'void'; audit('void', 'gift', gift.id); db.session.commit(); flash('Contribution voided.', 'success')
         return redirect(url_for('contributions'))
 
+    @app.post('/contributions/<int:gift_id>/delete')
+    @require('gift_write')
+    def gift_delete(gift_id):
+        gift = db.get_or_404(Gift, gift_id)
+        if not gift.fiscal_year.is_open:
+            flash('Closed-year contributions cannot be deleted.', 'error')
+            return redirect(url_for('contributions'))
+        summary = f'{gift.person.name} ${gift.amount} on {gift.date.isoformat()}'
+        db.session.delete(gift)
+        audit('delete', 'gift', gift_id, summary=summary)
+        db.session.commit()
+        flash('Contribution deleted.', 'success')
+        return redirect(url_for('contributions'))
+
     @app.post('/contributions/<int:gift_id>/reconcile')
     @require('gift_write')
     def gift_reconcile(gift_id):
