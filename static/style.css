@@ -2,4 +2,4 @@
 
 .filter-form{flex-wrap:wrap}
 .trend-list{padding:6px 20px 18px}.trend-row{display:grid;grid-template-columns:90px minmax(100px,1fr) 110px;align-items:center;gap:14px;padding:10px 0;font-size:13px}.trend-row strong{text-align:right}.trend-track{height:11px;border-radius:99px;background:#edf3ed;overflow:hidden}.trend-track i{display:block;height:100%;min-width:3px;border-radius:99px;background:#2b7254}@media(max-width:500px){.trend-row{grid-template-columns:65px minmax(70px,1fr) 95px;gap:8px}}
-details p{margin:10px 0}details pre{overflow:auto;background:#f3f6f3;border:1px solid #e0e6e0;border-radius:8px;padding:12px;font-size:12px;line-height:1.45;white-space:pre-wrap}details code{font-size:12px}
+details p{margin:10px 0}details pre{overflow:auto;background:#f3f6f3;border:1px solid #e0e6e0;border-radius:8px;padding:12px;font-size:12px;line-height:1.45;white-space:pre-wrap}details code{font-size:12px}.sort-link{color:inherit;text-decoration:none;display:inline-flex;align-items:center;gap:4px}.sort-link:hover{color:#16533f}.sort-link.active{color:#16533f}.sort-ind{font-size:9px;line-height:1}

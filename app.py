@@ -703,8 +703,33 @@ def create_app(test_config=None):
     @app.route('/contributions')
     @require('gift_view')
     def contributions():
-        gifts = db.session.scalars(db.select(Gift).order_by(Gift.date.desc(), Gift.id.desc()).limit(200)).all()
-        return render_template('contributions.html', gifts=gifts)
+        sort_keys = {
+            'date': Gift.date,
+            'contributor': (Person.last_name, Person.first_name),
+            'fund': Fund.name,
+            'method': Gift.method,
+            'amount': Gift.amount,
+            'reconciled': Gift.reconciled,
+            'status': Gift.status,
+        }
+        sort = request.args.get('sort', 'date')
+        if sort not in sort_keys:
+            sort = 'date'
+        direction = request.args.get('dir', 'desc' if sort == 'date' else 'asc')
+        if direction not in ('asc', 'desc'):
+            direction = 'desc' if sort == 'date' else 'asc'
+        query = db.select(Gift)
+        if sort == 'contributor':
+            query = query.join(Person, Gift.person_id == Person.id)
+        elif sort == 'fund':
+            query = query.join(Fund, Gift.fund_id == Fund.id)
+        columns = sort_keys[sort]
+        if not isinstance(columns, tuple):
+            columns = (columns,)
+        order = [col.desc() if direction == 'desc' else col.asc() for col in columns]
+        order.append(Gift.id.desc() if direction == 'desc' else Gift.id.asc())
+        gifts = db.session.scalars(query.order_by(*order).limit(200)).all()
+        return render_template('contributions.html', gifts=gifts, sort=sort, direction=direction)
 
     @app.route('/contributions/import', methods=['GET', 'POST'])
     @require('gift_write')

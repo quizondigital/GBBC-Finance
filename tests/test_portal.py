@@ -192,6 +192,24 @@ def test_empty_csv_import_report(client):
     assert b'People import report' in response.data
     assert b'The file is empty.' in response.data
 
+def test_contributions_sortable_default_date_desc(client):
+    login(client, 'sally@example.org')
+    with client.application.app_context():
+        db.session.add(Person(first_name='Ben', last_name='Visitor', member_type='Non-member'))
+        db.session.commit()
+        db.session.add_all([
+            Gift(person_id=1, fiscal_year_id=1, fund_id=1, date=date(2026,8,1), amount=10, method='Cash', entered_by_id=1),
+            Gift(person_id=2, fiscal_year_id=1, fund_id=1, date=date(2026,10,1), amount=50, method='Check', entered_by_id=1),
+        ])
+        db.session.commit()
+    default = client.get('/contributions').data.decode()
+    assert 'sort=date' in default and '▼' in default
+    assert default.index('2026-10-01') < default.index('2026-08-01')
+    by_name = client.get('/contributions?sort=contributor&dir=asc').data.decode()
+    assert by_name.index('Ada Member') < by_name.index('Ben Visitor')
+    by_amount = client.get('/contributions?sort=amount&dir=desc').data.decode()
+    assert by_amount.index('$50.00') < by_amount.index('$10.00')
+
 def test_reconciliation_is_audited_and_role_limited(client):
     login(client, 'sally@example.org')
     with client.application.app_context():
