@@ -586,10 +586,51 @@ def create_app(test_config=None):
     @app.route('/people')
     @require('people_view')
     def people():
+        per_page = 25
+        sort_keys = {
+            'name': (Person.last_name, Person.first_name),
+            'type': Person.member_type,
+            'contact': Person.email,
+            'address': (Person.city, Person.address_line1, Person.last_name),
+            'status': Person.active,
+        }
         term = request.args.get('q', '').strip()
-        query = db.select(Person).order_by(Person.last_name, Person.first_name)
-        if term: query = query.where(db.or_(Person.first_name.ilike(f'%{term}%'), Person.last_name.ilike(f'%{term}%'), Person.email.ilike(f'%{term}%')))
-        return render_template('people.html', people=db.session.scalars(query.limit(200)).all(), q=term)
+        sort = request.args.get('sort', 'name')
+        if sort not in sort_keys:
+            sort = 'name'
+        direction = request.args.get('dir', 'asc')
+        if direction not in ('asc', 'desc'):
+            direction = 'asc'
+        filters = []
+        if term:
+            filters.append(db.or_(Person.first_name.ilike(f'%{term}%'), Person.last_name.ilike(f'%{term}%'), Person.email.ilike(f'%{term}%')))
+        count_query = db.select(db.func.count()).select_from(Person)
+        if filters:
+            count_query = count_query.where(*filters)
+        total = db.session.scalar(count_query) or 0
+        total_pages = max(1, (total + per_page - 1) // per_page)
+        page = request.args.get('page', 1, type=int) or 1
+        page = min(max(page, 1), total_pages)
+        query = db.select(Person)
+        if filters:
+            query = query.where(*filters)
+        columns = sort_keys[sort]
+        if not isinstance(columns, tuple):
+            columns = (columns,)
+        order = [col.desc() if direction == 'desc' else col.asc() for col in columns]
+        order.append(Person.id.desc() if direction == 'desc' else Person.id.asc())
+        people_rows = db.session.scalars(query.order_by(*order).offset((page - 1) * per_page).limit(per_page)).all()
+        return render_template(
+            'people.html',
+            people=people_rows,
+            q=term,
+            sort=sort,
+            direction=direction,
+            page=page,
+            total_pages=total_pages,
+            total=total,
+            per_page=per_page,
+        )
 
     @app.route('/people/new', methods=['GET', 'POST'])
     @require('people_write')

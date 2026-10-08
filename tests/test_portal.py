@@ -192,6 +192,26 @@ def test_empty_csv_import_report(client):
     assert b'People import report' in response.data
     assert b'The file is empty.' in response.data
 
+def test_people_sort_and_pagination(client):
+    login(client, 'sally@example.org')
+    with client.application.app_context():
+        db.session.add_all([
+            Person(first_name=f'Person{i:02d}', last_name=f'Zed{i:02d}' if i < 20 else f'Able{i:02d}', member_type='Member', email=f'p{i}@example.org')
+            for i in range(30)
+        ])
+        db.session.commit()
+    default = client.get('/people').data.decode()
+    assert 'sort=name' in default and '▲' in default
+    assert default.count('<tr>') == 26  # header + 25 rows
+    assert 'aria-label="People pages"' in default
+    assert '>First<' in default and '>Last<' in default
+    page2 = client.get('/people?page=2').data.decode()
+    assert page2.count('<tr>') == 7  # header + fixture Ada + 5 remaining from batch? fixture has Ada Member already = 31 total
+    # 31 people total: page2 has 6 rows + header
+    assert 'aria-current="page">2<' in page2
+    by_contact = client.get('/people?sort=contact&dir=asc').data.decode()
+    assert 'sort=contact' in by_contact
+
 def test_contributions_pagination(client):
     login(client, 'sally@example.org')
     with client.application.app_context():
