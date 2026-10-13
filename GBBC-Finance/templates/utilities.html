@@ -1,0 +1,21 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="heading">
+  <div>
+    <p class="eyebrow">Tools</p>
+    <h1>Utilities</h1>
+    <p class="muted">Helpers that prepare data for the giving portal.</p>
+  </div>
+</div>
+<section class="card">
+  <div class="user-list">
+    <div class="user-row">
+      <span>
+        <strong>People List from a BoA CSV</strong>
+        <small>Build a first-name / last-name CSV from Bank of America Zelle credits.</small>
+      </span>
+      <a class="button secondary" href="{{ url_for('utilities_boa_people') }}">Open</a>
+    </div>
+  </div>
+</section>
+{% endblock %}

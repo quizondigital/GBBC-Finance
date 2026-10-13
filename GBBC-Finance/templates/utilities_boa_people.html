@@ -1,0 +1,21 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="heading">
+  <div>
+    <p class="eyebrow">Utilities</p>
+    <h1>People List from a BoA CSV</h1>
+    <p class="muted">Upload a Bank of America checking export. Zelle credits are scanned for payer names; outgoing Zelle payments are ignored. The download uses first_name and last_name columns.</p>
+  </div>
+  <a class="button secondary" href="{{ url_for('utilities') }}">Back to Utilities</a>
+</div>
+<section class="card form-card">
+  <form method="post" enctype="multipart/form-data" class="form-stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label>Bank of America CSV file <em>required</em>
+      <input type="file" name="file" accept=".csv,text/csv" required>
+    </label>
+    <p class="muted">Names are taken from the Description column: the first word after “from”, and the last word before “for” or “Conf#”.</p>
+    <button class="button" type="submit">Create people CSV</button>
+  </form>
+</section>
+{% endblock %}

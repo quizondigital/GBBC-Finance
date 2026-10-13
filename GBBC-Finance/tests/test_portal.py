@@ -192,6 +192,34 @@ def test_empty_csv_import_report(client):
     assert b'People import report' in response.data
     assert b'The file is empty.' in response.data
 
+def test_utilities_boa_people_csv(client):
+    login(client, 'sally@example.org')
+    assert b'People List from a BoA CSV' in client.get('/utilities').data
+    sample = (
+        'Date,Description,Amount,Running Bal.\n'
+        '01/02/2026,"Zelle payment from MARIA MARANA for ""Tithes""; Conf# lkadzmzj9","250.00","100.00"\n'
+        '01/02/2026,"Zelle payment from KIRSTEIN JASPER BALAO for ""tithe""; Conf# abc","76.00","176.00"\n'
+        '01/05/2026,"Zelle payment from ELISEO PAGULAYAN Conf# f46mbhm9r","300.00","476.00"\n'
+        '01/05/2026,"Zelle Recurring payment from ARTHUR AGULTO for ""Weekly giving""; Conf# j521","264.00","740.00"\n'
+        '01/09/2026,"Zelle payment to Jayvee Pasturan Conf# yrjovwgsd","-96.00","644.00"\n'
+        '01/05/2026,"Deposit","590.00","1234.00"\n'
+    )
+    response = client.post(
+        '/utilities/boa-people',
+        data={'csrf_token': token(client), 'file': (io.BytesIO(sample.encode('utf-8')), 'boa.csv')},
+        content_type='multipart/form-data',
+    )
+    assert response.status_code == 200
+    assert response.headers['Content-Disposition'].startswith('attachment;')
+    body = response.data.decode()
+    assert 'first_name,last_name' in body
+    assert 'MARIA,MARANA' in body
+    assert 'KIRSTEIN,BALAO' in body
+    assert 'ELISEO,PAGULAYAN' in body
+    assert 'ARTHUR,AGULTO' in body
+    assert 'Jayvee' not in body
+    assert 'Pasturan' not in body
+
 def test_person_delete_from_list(client):
     login(client, 'sally@example.org')
     listing = client.get('/people').data

@@ -52,6 +52,7 @@ PAGE_MATRIX = [
     ('Dashboard', 'overview'), ('People directory', 'people_view'), ('Create and edit people', 'people_write'),
     ('Contribution detail', 'gift_view'), ('Record and correct gifts', 'gift_write'), ('Aggregate giving reports', 'reports'),
     ('Individual giving reports', 'detail_reports'), ('Giving statements', 'statements'),
+    ('Utilities', 'people_view'),
     ('User administration', 'users'), ('Role permissions', 'roles'), ('Fiscal-year administration', 'fiscal'),
     ('Feedback', 'feedback'), ('Website settings', 'settings'),
     ('Review submitted feedback', 'feedback_review'), ('Audit history', 'audit_view'),
@@ -364,6 +365,63 @@ def parse_gift_import_row(row, cache):
 
 def csv_row_blank(row):
     return not any(str(value or '').strip() for value in row.values())
+
+def extract_people_from_boa_csv(file_storage):
+    """Return unique (first_name, last_name) pairs from Bank of America Zelle credits.
+
+    Keeps rows whose Description contains Zelle and a payer ("from ...").
+    Skips outgoing Zelle payments ("payment to ...").
+    First name is the first word after "from"; last name is the last word
+    before "for" or "Conf#"/"CONF".
+    """
+    raw = file_storage.read()
+    if not raw or not (raw.strip() if isinstance(raw, (bytes, str)) else str(raw).strip()):
+        raise ValueError('The file is empty.')
+    if isinstance(raw, bytes):
+        try:
+            text = raw.decode('utf-8-sig')
+        except UnicodeError as exc:
+            raise ValueError('The file could not be read. Save it again as a CSV from Excel or Google Sheets.') from exc
+    else:
+        text = raw
+    lines = text.splitlines()
+    if not lines:
+        raise ValueError('The file is empty.')
+    start = 0
+    for index, line in enumerate(lines):
+        if line.lower().startswith('date,description'):
+            start = index
+            break
+    reader = csv.DictReader(io.StringIO('\n'.join(lines[start:])))
+    if not reader.fieldnames or 'Description' not in reader.fieldnames:
+        raise ValueError('The CSV must include a Description column (Bank of America export).')
+    people = []
+    seen = set()
+    for row in reader:
+        description = (row.get('Description') or '').strip()
+        if 'zelle' not in description.lower():
+            continue
+        if re.search(r'\bpayment\s+to\b', description, re.I):
+            continue
+        match = re.search(r'\bfrom\s+(.+)$', description, re.I | re.S)
+        if not match:
+            continue
+        rest = match.group(1)
+        cut = re.search(r'\s+(?:for\b|Conf(?:#|\b)|CONF(?:#|\b))', rest, re.I)
+        name_part = rest[:cut.start()] if cut else rest
+        words = [re.sub(r'^[^\w\-]+|[^\w\-]+$', '', word) for word in name_part.split()]
+        words = [word for word in words if word]
+        if len(words) < 2:
+            continue
+        first_name, last_name = words[0], words[-1]
+        key = (first_name.lower(), last_name.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        people.append((first_name, last_name))
+    if not people:
+        raise ValueError('No Zelle payer names were found in that file.')
+    return people
 
 def csv_row_preview(row, fieldnames):
     if not row:
@@ -1144,6 +1202,39 @@ def create_app(test_config=None):
             return redirect(url_for('fiscal'))
         years = db.session.scalars(db.select(FiscalYear).order_by(FiscalYear.start_date.desc())).all()
         return render_template('fiscal.html', years=years)
+
+    @app.route('/utilities')
+    @require('people_view')
+    def utilities():
+        return render_template('utilities.html')
+
+    @app.route('/utilities/boa-people', methods=['GET', 'POST'])
+    @require('people_view')
+    def utilities_boa_people():
+        if request.method == 'POST':
+            file = request.files.get('file')
+            if not file or not file.filename.lower().endswith('.csv'):
+                flash('Choose a Bank of America CSV file.', 'error')
+            else:
+                try:
+                    people = extract_people_from_boa_csv(file)
+                except ValueError as exc:
+                    flash(str(exc), 'error')
+                else:
+                    output = io.StringIO()
+                    writer = csv.writer(output)
+                    writer.writerow(['first_name', 'last_name'])
+                    writer.writerows(people)
+                    content = io.BytesIO(output.getvalue().encode('utf-8'))
+                    audit('export', 'utility', summary=f'BoA Zelle people list ({len(people)})')
+                    db.session.commit()
+                    return send_file(
+                        content,
+                        as_attachment=True,
+                        download_name='GBBC_people_from_boa.csv',
+                        mimetype='text/csv',
+                    )
+        return render_template('utilities_boa_people.html')
 
     @app.route('/help', methods=['GET', 'POST'])
     @require('feedback')
