@@ -366,16 +366,7 @@ def parse_gift_import_row(row, cache):
 def csv_row_blank(row):
     return not any(str(value or '').strip() for value in row.values())
 
-def extract_people_from_boa_csv(file_storage):
-    """Return unique (first_name, last_name) pairs from Bank of America Zelle credits.
-
-    Keeps rows whose Description contains Zelle and a payer ("from ...").
-    Skips outgoing Zelle payments ("payment to ...").
-    First name is the first word after "from"; last name is the last word
-    before "for" or "Conf#"/"CONF". When the first word is Maria or Ma and
-    another word appears before the last name, that second word is appended
-    to the first name with a space.
-    """
+def read_boa_transaction_rows(file_storage):
     raw = file_storage.read()
     if not raw or not (raw.strip() if isinstance(raw, (bytes, str)) else str(raw).strip()):
         raise ValueError('The file is empty.')
@@ -397,35 +388,99 @@ def extract_people_from_boa_csv(file_storage):
     reader = csv.DictReader(io.StringIO('\n'.join(lines[start:])))
     if not reader.fieldnames or 'Description' not in reader.fieldnames:
         raise ValueError('The CSV must include a Description column (Bank of America export).')
+    return list(reader)
+
+def parse_zelle_payer_name(description):
+    """Return (first_name, last_name) for an incoming Zelle description, else None."""
+    if 'zelle' not in description.lower():
+        return None
+    if re.search(r'\bpayment\s+to\b', description, re.I):
+        return None
+    match = re.search(r'\bfrom\s+(.+)$', description, re.I | re.S)
+    if not match:
+        return None
+    rest = match.group(1)
+    cut = re.search(r'\s+(?:for\b|Conf(?:#|\b)|CONF(?:#|\b))', rest, re.I)
+    name_part = rest[:cut.start()] if cut else rest
+    words = [re.sub(r'^[^\w\-]+|[^\w\-]+$', '', word) for word in name_part.split()]
+    words = [word for word in words if word]
+    if len(words) < 2:
+        return None
+    first_name, last_name = words[0], words[-1]
+    if first_name.lower() in ('maria', 'ma') and len(words) >= 3:
+        first_name = f'{words[0]} {words[1]}'
+    return first_name, last_name
+
+def parse_zelle_note(description):
+    match = re.search(r'\bfor\b(.*)";', description, re.I | re.S)
+    if not match:
+        return ''
+    return match.group(1).strip().strip('"').strip()
+
+def parse_boa_amount(raw):
+    text = str(raw or '').strip().replace(',', '').replace('$', '')
+    if not text:
+        raise ValueError('missing amount')
+    value = Decimal(text)
+    if not value.is_finite():
+        raise ValueError('invalid amount')
+    return f'{value.quantize(Decimal("0.01"))}'
+
+def parse_boa_date(raw):
+    text = str(raw or '').strip()
+    for fmt in ('%m/%d/%Y', '%Y-%m-%d'):
+        try:
+            return datetime.strptime(text, fmt).date().isoformat()
+        except ValueError:
+            continue
+    raise ValueError('invalid date')
+
+def extract_people_from_boa_csv(file_storage):
+    """Return unique (first_name, last_name) pairs from Bank of America Zelle credits."""
     people = []
     seen = set()
-    for row in reader:
-        description = (row.get('Description') or '').strip()
-        if 'zelle' not in description.lower():
+    for row in read_boa_transaction_rows(file_storage):
+        parsed = parse_zelle_payer_name((row.get('Description') or '').strip())
+        if not parsed:
             continue
-        if re.search(r'\bpayment\s+to\b', description, re.I):
-            continue
-        match = re.search(r'\bfrom\s+(.+)$', description, re.I | re.S)
-        if not match:
-            continue
-        rest = match.group(1)
-        cut = re.search(r'\s+(?:for\b|Conf(?:#|\b)|CONF(?:#|\b))', rest, re.I)
-        name_part = rest[:cut.start()] if cut else rest
-        words = [re.sub(r'^[^\w\-]+|[^\w\-]+$', '', word) for word in name_part.split()]
-        words = [word for word in words if word]
-        if len(words) < 2:
-            continue
-        first_name, last_name = words[0], words[-1]
-        if first_name.lower() in ('maria', 'ma') and len(words) >= 3:
-            first_name = f'{words[0]} {words[1]}'
-        key = (first_name.lower(), last_name.lower())
+        key = (parsed[0].lower(), parsed[1].lower())
         if key in seen:
             continue
         seen.add(key)
-        people.append((first_name, last_name))
+        people.append(parsed)
     if not people:
         raise ValueError('No Zelle payer names were found in that file.')
     return people
+
+def extract_gifts_from_boa_csv(file_storage):
+    """Return contribution rows from Bank of America Zelle credits."""
+    gifts = []
+    for row in read_boa_transaction_rows(file_storage):
+        description = (row.get('Description') or '').strip()
+        parsed = parse_zelle_payer_name(description)
+        if not parsed:
+            continue
+        try:
+            gift_date = parse_boa_date(row.get('Date'))
+            amount = parse_boa_amount(row.get('Amount'))
+        except (ValueError, InvalidOperation):
+            continue
+        first_name, last_name = parsed
+        gifts.append({
+            'date': gift_date,
+            'first_name': first_name,
+            'last_name': last_name,
+            'email': '',
+            'fund': '',
+            'amount': amount,
+            'method': 'Online',
+            'fiscal_year': '',
+            'reference': '',
+            'note': parse_zelle_note(description),
+        })
+    if not gifts:
+        raise ValueError('No Zelle giving records were found in that file.')
+    return gifts
 
 def csv_row_preview(row, fieldnames):
     if not row:
@@ -1239,6 +1294,37 @@ def create_app(test_config=None):
                         mimetype='text/csv',
                     )
         return render_template('utilities_boa_people.html')
+
+    @app.route('/utilities/boa-giving', methods=['GET', 'POST'])
+    @require('people_view')
+    def utilities_boa_giving():
+        if request.method == 'POST':
+            file = request.files.get('file')
+            if not file or not file.filename.lower().endswith('.csv'):
+                flash('Choose a Bank of America CSV file.', 'error')
+            else:
+                try:
+                    gifts = extract_gifts_from_boa_csv(file)
+                except ValueError as exc:
+                    flash(str(exc), 'error')
+                else:
+                    output = io.StringIO()
+                    writer = csv.DictWriter(output, fieldnames=[
+                        'date', 'first_name', 'last_name', 'email', 'fund', 'amount',
+                        'method', 'fiscal_year', 'reference', 'note',
+                    ])
+                    writer.writeheader()
+                    writer.writerows(gifts)
+                    content = io.BytesIO(output.getvalue().encode('utf-8'))
+                    audit('export', 'utility', summary=f'BoA Zelle giving list ({len(gifts)})')
+                    db.session.commit()
+                    return send_file(
+                        content,
+                        as_attachment=True,
+                        download_name='GBBC_contributions_from_boa.csv',
+                        mimetype='text/csv',
+                    )
+        return render_template('utilities_boa_giving.html')
 
     @app.route('/help', methods=['GET', 'POST'])
     @require('feedback')

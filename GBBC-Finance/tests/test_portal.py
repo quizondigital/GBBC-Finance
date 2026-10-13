@@ -224,6 +224,32 @@ def test_utilities_boa_people_csv(client):
     assert 'Jayvee' not in body
     assert 'Pasturan' not in body
 
+def test_utilities_boa_giving_csv(client):
+    login(client, 'sally@example.org')
+    assert b'Giving List from a BoA CSV' in client.get('/utilities').data
+    sample = (
+        'Date,Description,Amount,Running Bal.\n'
+        '01/02/2026,"Zelle payment from MARIA MARANA for ""Tithes""; Conf# lkadzmzj9","250.00","100.00"\n'
+        '01/02/2026,"Zelle payment from MARIA C PAGULAYAN for ""Kris tithes""; Conf# xyz","1,050.50","1150.50"\n'
+        '01/05/2026,"Zelle payment from ELISEO PAGULAYAN Conf# f46mbhm9r","300.00","1450.50"\n'
+        '01/09/2026,"Zelle payment to Jayvee Pasturan Conf# yrjovwgsd","-96.00","1354.50"\n'
+        '01/05/2026,"Deposit","590.00","1944.50"\n'
+    )
+    response = client.post(
+        '/utilities/boa-giving',
+        data={'csrf_token': token(client), 'file': (io.BytesIO(sample.encode('utf-8')), 'boa.csv')},
+        content_type='multipart/form-data',
+    )
+    assert response.status_code == 200
+    assert response.headers['Content-Disposition'].startswith('attachment;')
+    body = response.data.decode().strip().splitlines()
+    assert body[0] == 'date,first_name,last_name,email,fund,amount,method,fiscal_year,reference,note'
+    assert '2026-01-02,MARIA,MARANA,,,250.00,Online,,,Tithes' in body
+    assert '2026-01-02,MARIA C,PAGULAYAN,,,1050.50,Online,,,Kris tithes' in body
+    assert '2026-01-05,ELISEO,PAGULAYAN,,,300.00,Online,,,' in body
+    assert 'Jayvee' not in response.data.decode()
+    assert 'Pasturan' not in response.data.decode()
+
 def test_person_delete_from_list(client):
     login(client, 'sally@example.org')
     listing = client.get('/people').data
