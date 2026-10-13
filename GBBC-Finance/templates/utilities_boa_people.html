@@ -14,7 +14,7 @@
     <label>Bank of America CSV file <em>required</em>
       <input type="file" name="file" accept=".csv,text/csv" required>
     </label>
-    <p class="muted">Names are taken from the Description column: the first word after “from”, and the last word before “for” or “Conf#”.</p>
+    <p class="muted">Names are taken from the Description column: the first word after “from”, and the last word before “for” or “Conf#”. If the first word is Maria or Ma and another word appears before the last name, that second word is included in the first name.</p>
     <button class="button" type="submit">Create people CSV</button>
   </form>
 </section>

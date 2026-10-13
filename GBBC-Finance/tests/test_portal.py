@@ -198,11 +198,13 @@ def test_utilities_boa_people_csv(client):
     sample = (
         'Date,Description,Amount,Running Bal.\n'
         '01/02/2026,"Zelle payment from MARIA MARANA for ""Tithes""; Conf# lkadzmzj9","250.00","100.00"\n'
-        '01/02/2026,"Zelle payment from KIRSTEIN JASPER BALAO for ""tithe""; Conf# abc","76.00","176.00"\n'
-        '01/05/2026,"Zelle payment from ELISEO PAGULAYAN Conf# f46mbhm9r","300.00","476.00"\n'
-        '01/05/2026,"Zelle Recurring payment from ARTHUR AGULTO for ""Weekly giving""; Conf# j521","264.00","740.00"\n'
-        '01/09/2026,"Zelle payment to Jayvee Pasturan Conf# yrjovwgsd","-96.00","644.00"\n'
-        '01/05/2026,"Deposit","590.00","1234.00"\n'
+        '01/02/2026,"Zelle payment from MARIA C PAGULAYAN for ""Kris tithes""; Conf# xyz","50.00","150.00"\n'
+        '01/02/2026,"Zelle payment from MA DARIEANA J LAUD for ""offering""; Conf# qwe","40.00","190.00"\n'
+        '01/02/2026,"Zelle payment from KIRSTEIN JASPER BALAO for ""tithe""; Conf# abc","76.00","266.00"\n'
+        '01/05/2026,"Zelle payment from ELISEO PAGULAYAN Conf# f46mbhm9r","300.00","566.00"\n'
+        '01/05/2026,"Zelle Recurring payment from ARTHUR AGULTO for ""Weekly giving""; Conf# j521","264.00","830.00"\n'
+        '01/09/2026,"Zelle payment to Jayvee Pasturan Conf# yrjovwgsd","-96.00","734.00"\n'
+        '01/05/2026,"Deposit","590.00","1324.00"\n'
     )
     response = client.post(
         '/utilities/boa-people',
@@ -214,6 +216,8 @@ def test_utilities_boa_people_csv(client):
     body = response.data.decode()
     assert 'first_name,last_name' in body
     assert 'MARIA,MARANA' in body
+    assert 'MARIA C,PAGULAYAN' in body
+    assert 'MA DARIEANA,LAUD' in body
     assert 'KIRSTEIN,BALAO' in body
     assert 'ELISEO,PAGULAYAN' in body
     assert 'ARTHUR,AGULTO' in body

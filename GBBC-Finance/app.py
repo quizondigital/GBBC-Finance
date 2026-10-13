@@ -372,7 +372,9 @@ def extract_people_from_boa_csv(file_storage):
     Keeps rows whose Description contains Zelle and a payer ("from ...").
     Skips outgoing Zelle payments ("payment to ...").
     First name is the first word after "from"; last name is the last word
-    before "for" or "Conf#"/"CONF".
+    before "for" or "Conf#"/"CONF". When the first word is Maria or Ma and
+    another word appears before the last name, that second word is appended
+    to the first name with a space.
     """
     raw = file_storage.read()
     if not raw or not (raw.strip() if isinstance(raw, (bytes, str)) else str(raw).strip()):
@@ -414,6 +416,8 @@ def extract_people_from_boa_csv(file_storage):
         if len(words) < 2:
             continue
         first_name, last_name = words[0], words[-1]
+        if first_name.lower() in ('maria', 'ma') and len(words) >= 3:
+            first_name = f'{words[0]} {words[1]}'
         key = (first_name.lower(), last_name.lower())
         if key in seen:
             continue
