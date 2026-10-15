@@ -1,11 +1,16 @@
 from datetime import date
 import io
 import pytest
+from pypdf import PdfReader
 from werkzeug.security import generate_password_hash
 from app import create_app, db, User, Person, Fund, FiscalYear, Gift, ensure_schema
 
 def _hash(password):
     return generate_password_hash(password, method='pbkdf2:sha256')
+
+def pdf_text(data):
+    reader = PdfReader(io.BytesIO(data))
+    return '\n'.join((page.extract_text() or '') for page in reader.pages)
 
 @pytest.fixture
 def client(tmp_path):
@@ -85,9 +90,10 @@ def test_person_structured_address_and_letter(client):
         db.session.add(Gift(person_id=1, fiscal_year_id=1, fund_id=1, date=date(2026,9,1), amount=50, method='Check', entered_by_id=1)); db.session.commit()
     pdf = client.get('/reports/statements/1.pdf?year_id=1')
     assert pdf.status_code == 200
-    assert b'170 Greenbrook Rd.' in pdf.data
-    assert b'Attn: Finance' in pdf.data
-    assert b'Green Brook, NJ 08812' in pdf.data
+    letter = pdf_text(pdf.data)
+    assert '170 Greenbrook Rd.' in letter
+    assert 'Attn: Finance' in letter
+    assert 'Green Brook, NJ 08812' in letter
     people = client.get('/people').data
     assert b'170 Greenbrook Rd.' in people and b'Green Brook, NJ 08812' in people
     form = client.get('/people/new').data
@@ -101,10 +107,11 @@ def test_exports_and_role_matrix(client):
         db.session.add(Gift(person_id=1, fiscal_year_id=1, fund_id=1, date=date(2026,9,1), amount=123, method='Check', entered_by_id=1)); db.session.commit()
     pdf = client.get('/reports/statements/1.pdf')
     assert pdf.status_code == 200 and pdf.data.startswith(b'%PDF')
-    assert b'Romella Seepaul' in pdf.data
-    assert b'Dear Ada' in pdf.data
-    assert b'2 Corinthians 9:6-8' in pdf.data
-    assert b'Itemized contributions' in pdf.data
+    letter = pdf_text(pdf.data)
+    assert 'Romella Seepaul' in letter
+    assert 'Dear Ada' in letter
+    assert '2 Corinthians 9:6-8' in letter
+    assert 'Itemized contributions' in letter
     xlsx = client.get('/reports/export.xlsx')
     assert xlsx.status_code == 200 and xlsx.data.startswith(b'PK')
     assert client.get('/admin/settings').status_code == 200

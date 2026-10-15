@@ -15,7 +15,9 @@ from urllib.parse import urlparse
 import click
 from flask import Flask, abort, current_app, flash, g, redirect, render_template, request, send_file, session, url_for
 from flask_sqlalchemy import SQLAlchemy
+from mailmerge import MailMerge
 from openpyxl import Workbook
+from pypdf import PdfReader, PdfWriter
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.utils import simpleSplit
@@ -597,6 +599,104 @@ def statement_year_label(gifts):
         return f'{years[0]}–{years[-1]}'
     return str(date.today().year)
 
+def giving_letter_template_path():
+    return Path(current_app.root_path) / 'letter_templates' / 'giving_letter.docx'
+
+def person_statement_address(person):
+    lines = person_address_lines(person)
+    street = ', '.join(lines[:-1]) if len(lines) > 1 else (lines[0] if lines else '')
+    city_state_zip = lines[-1] if lines else ''
+    if len(lines) == 1:
+        street, city_state_zip = lines[0], ''
+    return street, city_state_zip
+
+def replace_docx_text(docx_path, replacements):
+    from docx import Document
+    document = Document(str(docx_path))
+    for paragraph in document.paragraphs:
+        original = paragraph.text
+        updated = original
+        for old, new in replacements.items():
+            updated = updated.replace(old, new)
+        if updated == original or not paragraph.runs:
+            continue
+        paragraph.runs[0].text = updated
+        for run in paragraph.runs[1:]:
+            run.text = ''
+    document.save(str(docx_path))
+
+def render_giving_letter_docx(person, year_label, amount_text):
+    template = giving_letter_template_path()
+    if not template.exists():
+        raise FileNotFoundError(f'Missing giving letter template: {template}')
+    street, city_state_zip = person_statement_address(person)
+    filled = Path(current_app.instance_path) / f'statement_{person.id}_{secrets.token_hex(4)}.docx'
+    filled.parent.mkdir(parents=True, exist_ok=True)
+    document = MailMerge(str(template))
+    document.merge(
+        Name=person.name,
+        Address=street,
+        City_State_Zip=city_state_zip,
+        Total=amount_text.replace('$', ''),
+    )
+    document.write(str(filled))
+    # Template hard-codes calendar year as split runs ("202" + "5"); normalize to statement year.
+    replace_docx_text(filled, {'2025': str(year_label)})
+    return filled
+
+def convert_docx_to_pdf(docx_path):
+    out_dir = Path(current_app.instance_path) / 'statement_pdf'
+    out_dir.mkdir(parents=True, exist_ok=True)
+    result = __import__('subprocess').run(
+        ['soffice', '--headless', '--nologo', '--nofirststartwizard', '--convert-to', 'pdf', '--outdir', str(out_dir), str(docx_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    pdf_path = out_dir / f'{docx_path.stem}.pdf'
+    if result.returncode != 0 or not pdf_path.exists():
+        detail = (result.stderr or result.stdout or 'LibreOffice conversion failed').strip()
+        raise RuntimeError(detail)
+    return pdf_path
+
+def build_itemized_statement_pdf(person, gifts, church_name, year_label, amount_text):
+    out = io.BytesIO()
+    pdf = canvas.Canvas(out, pagesize=letter, pageCompression=0 if current_app.config.get('TESTING') else 1)
+    left, width, y = 54, 504, 740
+    pdf.setFillColor(colors.HexColor('#174e3b'))
+    pdf.setFont('Helvetica-Bold', 14)
+    pdf.drawString(left, y, church_name)
+    pdf.setFillColor(colors.black)
+    pdf.setFont('Helvetica', 10)
+    pdf.drawString(left, 720, f'Itemized contributions for {person.name} — {year_label}')
+    y = 690
+    pdf.setFont('Helvetica-Bold', 10)
+    pdf.drawString(left, y, 'Date'); pdf.drawString(140, y, 'Fund'); pdf.drawRightString(left + width, y, 'Amount'); y -= 20
+    pdf.setFont('Helvetica', 10)
+    for gift in gifts:
+        if y < 72:
+            pdf.showPage(); y = 740
+            pdf.setFont('Helvetica', 10)
+        pdf.drawString(left, y, gift.date.isoformat())
+        pdf.drawString(140, y, gift.fund.name[:50])
+        pdf.drawRightString(left + width, y, f'${gift.amount:,.2f}')
+        y -= 18
+    pdf.setFont('Helvetica-Bold', 11)
+    pdf.drawRightString(left + width, max(56, y - 10), f'Total: {amount_text}')
+    pdf.save(); out.seek(0)
+    return out
+
+def merge_pdf_bytes(*pdf_buffers):
+    writer = PdfWriter()
+    for buffer in pdf_buffers:
+        reader = PdfReader(buffer)
+        for page in reader.pages:
+            writer.add_page(page)
+    merged = io.BytesIO()
+    writer.write(merged)
+    merged.seek(0)
+    return merged
+
 def draw_paragraphs(pdf, paragraphs, x, y, width, font='Helvetica', size=10, leading=14, gap=10):
     pdf.setFont(font, size)
     for paragraph in paragraphs:
@@ -1169,63 +1269,24 @@ def create_app(test_config=None):
         year_label = statement_year_label(gifts)
         total = sum((x.amount for x in gifts), Decimal('0'))
         amount_text = f'${total:,.2f}'
-        out = io.BytesIO()
-        pdf = canvas.Canvas(out, pagesize=letter, pageCompression=0 if app.config.get('TESTING') else 1)
-        left, width, y = 54, 504, 740
-
-        pdf.setFont('Helvetica', 11)
-        pdf.drawString(left, y, f'{person.first_name} {person.last_name}'); y -= 16
-        for line in person_address_lines(person):
-            pdf.drawString(left, y, line); y -= 16
-        y -= 18
-
-        pdf.drawString(left, y, f'Dear {person.first_name},'); y -= 24
-        y = draw_paragraphs(pdf, [
-            f'We gratefully acknowledge your gift to {church_name} throughout {year_label} in the amount of {amount_text}. Through your generous giving, our congregation has been able to support the work of Jesus Christ; locally and globally through our supported missionaries, organizations, and Bible schools.',
-            f'Attached is an itemized statement of your contributions for {year_label} based on our records. If you have any concerns about the accuracy of this information, please feel free to let us know.',
-            'For income tax purposes, it is important for us to state here that you did not receive any goods or services in return for any of these contributions other than intangible religious benefits. You made this gift out of your own generosity and commitment to Jesus Christ.',
-            'Once again, thank you for your generosity and commitment to the work of Jesus Christ through this church.',
-        ], left, y, width, size=11, leading=15, gap=12)
-
-        y -= 6
-        pdf.setFont('Helvetica', 11)
-        pdf.drawString(left, y, 'Sincerely,'); y -= 28
-        pdf.drawString(left, y, 'Romella Seepaul'); y -= 15
-        pdf.drawString(left, y, 'Financial Secretary'); y -= 15
-        pdf.drawString(left, y, church_name); y -= 36
-
-        scripture = (
-            '"Whoever sows sparingly will also reap sparingly, and whoever sows bountifully will also '
-            'reap bountifully. Each one must give as he has decided in his heart, not reluctantly or '
-            'under compulsion, for God loves a cheerful giver. And God is able to make all grace abound '
-            'to you, so that having all sufficiency in all things at all times, you may abound in every good work."'
-        )
-        y = draw_paragraphs(pdf, [scripture], left, y, width, font='Helvetica-Oblique', size=9, leading=12, gap=6)
-        pdf.setFont('Helvetica', 9)
-        pdf.drawRightString(left + width, y, '2 Corinthians 9:6-8')
-
-        pdf.showPage()
-        pdf.setFillColor(colors.HexColor('#174e3b'))
-        pdf.setFont('Helvetica-Bold', 14)
-        pdf.drawString(left, 740, church_name)
-        pdf.setFillColor(colors.black)
-        pdf.setFont('Helvetica', 10)
-        pdf.drawString(left, 720, f'Itemized contributions for {person.name} — {year_label}')
-        y = 690
-        pdf.setFont('Helvetica-Bold', 10)
-        pdf.drawString(left, y, 'Date'); pdf.drawString(140, y, 'Fund'); pdf.drawRightString(left + width, y, 'Amount'); y -= 20
-        pdf.setFont('Helvetica', 10)
-        for gift in gifts:
-            if y < 72:
-                pdf.showPage(); y = 740
-                pdf.setFont('Helvetica', 10)
-            pdf.drawString(left, y, gift.date.isoformat())
-            pdf.drawString(140, y, gift.fund.name[:50])
-            pdf.drawRightString(left + width, y, f'${gift.amount:,.2f}')
-            y -= 18
-        pdf.setFont('Helvetica-Bold', 11)
-        pdf.drawRightString(left + width, max(56, y - 10), f'Total: {amount_text}')
-        pdf.save(); out.seek(0)
+        docx_path = pdf_path = None
+        try:
+            docx_path = render_giving_letter_docx(person, year_label, amount_text)
+            pdf_path = convert_docx_to_pdf(docx_path)
+            letter_pdf = io.BytesIO(pdf_path.read_bytes())
+            itemized_pdf = build_itemized_statement_pdf(person, gifts, church_name, year_label, amount_text)
+            out = merge_pdf_bytes(letter_pdf, itemized_pdf)
+        except Exception as exc:
+            current_app.logger.exception('Giving letter template rendering failed')
+            flash(f'Could not generate the giving letter from the Word template: {exc}', 'error')
+            return redirect(url_for('reports'))
+        finally:
+            for path in (docx_path, pdf_path):
+                if path and Path(path).exists():
+                    try:
+                        Path(path).unlink()
+                    except OSError:
+                        pass
         audit('export', 'statement', person_id); db.session.commit()
         return send_file(out, download_name=f'GBBC_statement_{person_id}.pdf', as_attachment=True, mimetype='application/pdf')
 
