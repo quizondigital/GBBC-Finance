@@ -226,7 +226,9 @@ def test_utilities_boa_people_csv(client):
 
 def test_utilities_boa_giving_csv(client):
     login(client, 'sally@example.org')
-    assert b'Giving List from a BoA CSV' in client.get('/utilities').data
+    utilities = client.get('/utilities').data
+    assert b'Giving List from BoA General Fund CSV' in utilities
+    assert b'title="Search and open a CSV file downloaded from BoA website"' in utilities
     sample = (
         'Date,Description,Amount,Running Bal.\n'
         '01/02/2026,"Zelle payment from MARIA MARANA for ""Tithes""; Conf# lkadzmzj9","250.00","100.00"\n'
@@ -244,9 +246,9 @@ def test_utilities_boa_giving_csv(client):
     assert response.headers['Content-Disposition'].startswith('attachment;')
     body = response.data.decode().strip().splitlines()
     assert body[0] == 'date,first_name,last_name,email,fund,amount,method,fiscal_year,reference,note'
-    assert '2026-01-02,MARIA,MARANA,,,250.00,Online,,,Tithes' in body
-    assert '2026-01-02,MARIA C,PAGULAYAN,,,1050.50,Online,,,Kris tithes' in body
-    assert '2026-01-05,ELISEO,PAGULAYAN,,,300.00,Online,,,' in body
+    assert '2026-01-02,MARIA,MARANA,,General Fund,250.00,Online,,,Tithes' in body
+    assert '2026-01-02,MARIA C,PAGULAYAN,,General Fund,1050.50,Online,,,Kris tithes' in body
+    assert '2026-01-05,ELISEO,PAGULAYAN,,General Fund,300.00,Online,,,' in body
     assert 'Jayvee' not in response.data.decode()
     assert 'Pasturan' not in response.data.decode()
 

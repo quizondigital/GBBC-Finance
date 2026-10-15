@@ -471,7 +471,7 @@ def extract_gifts_from_boa_csv(file_storage):
             'first_name': first_name,
             'last_name': last_name,
             'email': '',
-            'fund': '',
+            'fund': 'General Fund',
             'amount': amount,
             'method': 'Online',
             'fiscal_year': '',
@@ -1321,7 +1321,7 @@ def create_app(test_config=None):
                     return send_file(
                         content,
                         as_attachment=True,
-                        download_name='GBBC_contributions_from_boa.csv',
+                        download_name='GBBC_contributions_from_boa_general_fund.csv',
                         mimetype='text/csv',
                     )
         return render_template('utilities_boa_giving.html')
