@@ -16,6 +16,8 @@ export SECRET_KEY="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
 
 Local development defaults to SQLite in `instance/gbbc_portal.db`. No sample financial or personal data is installed.
 
+Giving statements merge the Word letter in `letter_templates/giving_letter.docx`, convert with LibreOffice, then stamp `letter_templates/giving_letter_header.png` so the green letterhead (logo, church name, tax ID, website) survives export.
+
 ## MySQL / PythonAnywhere
 
 Create a MySQL database and set `DATABASE_URL` to a URL such as `mysql+pymysql://USER:PASSWORD@HOST/DBNAME?charset=utf8mb4`. Set a persistent random `SECRET_KEY` and `COOKIE_SECURE=1` when HTTPS is configured. Point PythonAnywhere's WSGI application at `wsgi.py`, install `requirements.txt` into its virtual environment, then run `flask init-db` and `flask create-super-admin` in that environment. Configure DreamHost DNS and a valid HTTPS certificate for `finance.greenbrookchurch.org` before production use.

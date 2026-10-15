@@ -112,6 +112,12 @@ def test_exports_and_role_matrix(client):
     assert 'Dear Ada' in letter
     assert '2 Corinthians 9:6-8' in letter
     assert 'Itemized contributions' in letter
+    # Letterhead is stamped as artwork (logo, church name, tax ID, website, green banner).
+    reader = PdfReader(io.BytesIO(pdf.data))
+    letter_page = reader.pages[0]
+    xobjects = letter_page['/Resources']['/XObject'].get_object()
+    images = [xobjects[name] for name in xobjects if xobjects[name].get('/Subtype') == '/Image']
+    assert any(img.get('/Width', 0) >= 1000 and img.get('/Height', 0) >= 200 for img in images)
     xlsx = client.get('/reports/export.xlsx')
     assert xlsx.status_code == 200 and xlsx.data.startswith(b'PK')
     assert client.get('/admin/settings').status_code == 200

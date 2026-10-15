@@ -20,7 +20,7 @@ from openpyxl import Workbook
 from pypdf import PdfReader, PdfWriter
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
-from reportlab.lib.utils import simpleSplit
+from reportlab.lib.utils import ImageReader, simpleSplit
 from reportlab.pdfgen import canvas
 from werkzeug.security import check_password_hash, generate_password_hash
 
@@ -602,6 +602,9 @@ def statement_year_label(gifts):
 def giving_letter_template_path():
     return Path(current_app.root_path) / 'letter_templates' / 'giving_letter.docx'
 
+def giving_letter_header_path():
+    return Path(current_app.root_path) / 'letter_templates' / 'giving_letter_header.png'
+
 def person_statement_address(person):
     lines = person_address_lines(person)
     street = ', '.join(lines[:-1]) if len(lines) > 1 else (lines[0] if lines else '')
@@ -657,7 +660,44 @@ def convert_docx_to_pdf(docx_path):
     if result.returncode != 0 or not pdf_path.exists():
         detail = (result.stderr or result.stdout or 'LibreOffice conversion failed').strip()
         raise RuntimeError(detail)
-    return pdf_path
+    return polish_giving_letter_pdf(pdf_path)
+
+def polish_giving_letter_pdf(pdf_path):
+    """Restore letterhead LibreOffice drops from the layered Word header."""
+    pdf_path = Path(pdf_path)
+    reader = PdfReader(str(pdf_path))
+    if not reader.pages:
+        raise RuntimeError('Letter PDF has no pages')
+    page = reader.pages[0]
+    page_w = float(page.mediabox.width)
+    page_h = float(page.mediabox.height)
+    first_page_text = page.extract_text() or ''
+
+    overlay = io.BytesIO()
+    c = canvas.Canvas(overlay, pagesize=(page_w, page_h))
+    header = giving_letter_header_path()
+    if header.exists():
+        img = ImageReader(str(header))
+        iw, ih = img.getSize()
+        draw_h = page_w * (ih / float(iw))
+        c.setFillColor(colors.white)
+        c.rect(0, page_h - draw_h - 2, page_w, draw_h + 4, fill=1, stroke=0)
+        c.drawImage(img, 0, page_h - draw_h, width=page_w, height=draw_h, mask='auto')
+    # LibreOffice often pushes the scripture citation onto a spill page; keep page 1 only.
+    if '2 Corinthians 9:6-8' not in first_page_text:
+        c.setFillColor(colors.black)
+        c.setFont('Helvetica', 9)
+        c.drawRightString(page_w - 54, 36, '2 Corinthians 9:6-8')
+    c.save()
+    overlay.seek(0)
+    page.merge_page(PdfReader(overlay).pages[0])
+
+    writer = PdfWriter()
+    writer.add_page(page)
+    polished = pdf_path.with_name(pdf_path.stem + '_polished.pdf')
+    with polished.open('wb') as handle:
+        writer.write(handle)
+    return polished
 
 def build_itemized_statement_pdf(person, gifts, church_name, year_label, amount_text):
     out = io.BytesIO()
