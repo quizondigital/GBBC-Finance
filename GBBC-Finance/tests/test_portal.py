@@ -192,6 +192,61 @@ def test_empty_csv_import_report(client):
     assert b'People import report' in response.data
     assert b'The file is empty.' in response.data
 
+def test_people_sort_and_pagination(client):
+    login(client, 'sally@example.org')
+    with client.application.app_context():
+        db.session.add_all([
+            Person(first_name=f'Person{i:02d}', last_name=f'Zed{i:02d}' if i < 20 else f'Able{i:02d}', member_type='Member', email=f'p{i}@example.org')
+            for i in range(30)
+        ])
+        db.session.commit()
+    default = client.get('/people').data.decode()
+    assert 'sort=name' in default and '▲' in default
+    assert default.count('<tr>') == 26  # header + 25 rows
+    assert 'aria-label="People pages"' in default
+    assert '>First<' in default and '>Last<' in default
+    page2 = client.get('/people?page=2').data.decode()
+    assert page2.count('<tr>') == 7  # header + 6 remaining (31 total with fixture Ada)
+    assert 'aria-current="page">2<' in page2
+    by_contact = client.get('/people?sort=contact&dir=asc').data.decode()
+    assert 'sort=contact' in by_contact
+
+def test_contributions_pagination(client):
+    login(client, 'sally@example.org')
+    with client.application.app_context():
+        gifts = [
+            Gift(person_id=1, fiscal_year_id=1, fund_id=1, date=date(2026, 1, 1 + (i % 28)), amount=10 + i, method='Cash', entered_by_id=1)
+            for i in range(30)
+        ]
+        db.session.add_all(gifts)
+        db.session.commit()
+    page1 = client.get('/contributions').data.decode()
+    assert 'aria-label="Contributions pages"' in page1
+    assert '>First<' in page1 and '>Last<' in page1
+    assert page1.count('<tr>') == 26  # header + 25 rows
+    assert 'page=2' in page1
+    page2 = client.get('/contributions?page=2').data.decode()
+    assert page2.count('<tr>') == 6  # header + 5 remaining
+    assert 'aria-current="page">2<' in page2
+
+def test_contributions_sortable_default_date_desc(client):
+    login(client, 'sally@example.org')
+    with client.application.app_context():
+        db.session.add(Person(first_name='Ben', last_name='Visitor', member_type='Non-member'))
+        db.session.commit()
+        db.session.add_all([
+            Gift(person_id=1, fiscal_year_id=1, fund_id=1, date=date(2026,8,1), amount=10, method='Cash', entered_by_id=1),
+            Gift(person_id=2, fiscal_year_id=1, fund_id=1, date=date(2026,10,1), amount=50, method='Check', entered_by_id=1),
+        ])
+        db.session.commit()
+    default = client.get('/contributions').data.decode()
+    assert 'sort=date' in default and '▼' in default
+    assert default.index('2026-10-01') < default.index('2026-08-01')
+    by_name = client.get('/contributions?sort=contributor&dir=asc').data.decode()
+    assert by_name.index('Ada Member') < by_name.index('Ben Visitor')
+    by_amount = client.get('/contributions?sort=amount&dir=desc').data.decode()
+    assert by_amount.index('$50.00') < by_amount.index('$10.00')
+
 def test_utilities_boa_people_csv(client):
     login(client, 'sally@example.org')
     assert b'People List from a BoA CSV' in client.get('/utilities').data
