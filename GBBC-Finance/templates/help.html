@@ -16,6 +16,7 @@
       <p>Expected columns:</p>
       <p><code>first_name, last_name, member_type, email, phone, address_line1, address_line2, city, state, zip_code</code></p>
       <p><code>member_type</code> must be <strong>Member</strong> or <strong>Non-member</strong>. <code>state</code> is a 2-letter code such as NJ.</p>
+      <p>If a row matches a person already in the portal, you will see a confirmation screen before any updates are saved. Blank portal fields are filled from the CSV; blank CSV cells leave the portal value alone; when both have a value, the CSV overwrites the portal.</p>
       <p>Example with two records:</p>
       <pre>first_name,last_name,member_type,email,phone,address_line1,address_line2,city,state,zip_code
 Ada,Member,Member,ada@example.org,555-0100,170 Greenbrook Rd.,,Green Brook,NJ,08812

@@ -546,6 +546,212 @@ def find_duplicate_person(first, last, email):
         return db.session.scalar(db.select(Person).where(Person.email == email))
     return None
 
+PERSON_IMPORT_FIELDS = (
+    'first_name', 'last_name', 'member_type', 'email', 'phone',
+    'address_line1', 'address_line2', 'city', 'state', 'zip_code',
+)
+PERSON_IMPORT_FIELD_LABELS = {
+    'first_name': 'First name',
+    'last_name': 'Last name',
+    'member_type': 'Member type',
+    'email': 'Email',
+    'phone': 'Phone',
+    'address_line1': 'Address line 1',
+    'address_line2': 'Address line 2',
+    'city': 'City',
+    'state': 'State',
+    'zip_code': 'ZIP code',
+}
+
+def field_is_blank(value):
+    return not str(value or '').strip()
+
+def merge_field_value(current, incoming):
+    """Portal blank←CSV value; portal value←CSV blank keeps portal; both set←CSV overwrites."""
+    if field_is_blank(current) and not field_is_blank(incoming):
+        return str(incoming).strip()
+    if not field_is_blank(current) and field_is_blank(incoming):
+        return current if current is not None else ''
+    if not field_is_blank(current) and not field_is_blank(incoming):
+        return str(incoming).strip()
+    return (current if current is not None else '') if field_is_blank(incoming) else str(incoming).strip()
+
+def find_person_for_people_import(first, last, email):
+    """Match an existing person for CSV upsert; raise if the name is ambiguous."""
+    email_l = (email or '').strip().lower()
+    matches = db.session.scalars(
+        db.select(Person).where(Person.first_name.ilike(first), Person.last_name.ilike(last))
+    ).all()
+    if email_l:
+        email_matches = [person for person in matches if (person.email or '').strip().lower() == email_l]
+        if len(email_matches) == 1:
+            return email_matches[0]
+        if len(email_matches) > 1:
+            raise ValueError(f'multiple people matched {first} {last} with that email')
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            raise ValueError(f'multiple people matched {first} {last}; include a unique email to disambiguate')
+        return db.session.scalar(db.select(Person).where(db.func.lower(Person.email) == email_l))
+    blank_email = [person for person in matches if field_is_blank(person.email)]
+    if len(blank_email) == 1:
+        return blank_email[0]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise ValueError(f'multiple people matched {first} {last}; include email to disambiguate')
+    return None
+
+def parse_people_import_fields(row):
+    first = (row.get('first_name') or '').strip()
+    last = (row.get('last_name') or '').strip()
+    kind = (row.get('member_type') or '').strip()
+    if not first or not last:
+        raise ValueError('first name and last name are required')
+    line1, line2, city, state, zip_code = read_person_address(row)
+    fields = {
+        'first_name': first,
+        'last_name': last,
+        'member_type': kind,
+        'email': (row.get('email') or '').strip(),
+        'phone': (row.get('phone') or '').strip(),
+        'address_line1': line1,
+        'address_line2': line2,
+        'city': city,
+        'state': state,
+        'zip_code': zip_code,
+    }
+    return fields
+
+def plan_person_merge(person, fields):
+    """Return (merged_values, change_dicts) using people-import merge rules."""
+    merged = {}
+    changes = []
+    for name in PERSON_IMPORT_FIELDS:
+        current = getattr(person, name) or ''
+        incoming = fields.get(name, '')
+        if name == 'member_type' and field_is_blank(incoming):
+            new_value = current
+        else:
+            new_value = merge_field_value(current, incoming)
+        merged[name] = new_value
+        if str(current).strip() != str(new_value).strip():
+            changes.append({
+                'field': name,
+                'label': PERSON_IMPORT_FIELD_LABELS.get(name, name),
+                'from': str(current),
+                'to': str(new_value),
+            })
+    if not field_is_blank(fields.get('member_type')) and fields['member_type'] not in ('Member', 'Non-member'):
+        raise ValueError('member_type must be Member or Non-member')
+    if field_is_blank(merged.get('member_type')):
+        raise ValueError('member_type must be Member or Non-member')
+    if merged['member_type'] not in ('Member', 'Non-member'):
+        raise ValueError('member_type must be Member or Non-member')
+    return merged, changes
+
+def apply_person_fields(person, fields):
+    for name in PERSON_IMPORT_FIELDS:
+        setattr(person, name, fields.get(name) or '')
+
+def people_import_pending_path():
+    folder = Path(current_app.instance_path)
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder / f'people_import_pending_{g.user.id}.json'
+
+def store_people_import_pending(payload):
+    people_import_pending_path().write_text(json.dumps(payload), encoding='utf-8')
+
+def load_people_import_pending():
+    path = people_import_pending_path()
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+def clear_people_import_pending():
+    path = people_import_pending_path()
+    if path.exists():
+        path.unlink()
+
+def prepare_people_import(fieldnames, records):
+    creates, updates, unchanged, failures = [], [], [], []
+    seen = set()
+    for index, row in enumerate(records, start=2):
+        preview = csv_row_preview(row, fieldnames)
+        try:
+            fields = parse_people_import_fields(row)
+            if fields['member_type'] and fields['member_type'] not in ('Member', 'Non-member'):
+                raise ValueError('member_type must be Member or Non-member')
+            dup_key = (fields['first_name'].lower(), fields['last_name'].lower(), fields['email'].lower())
+            if dup_key in seen:
+                raise ValueError('duplicate of another row in this file')
+            seen.add(dup_key)
+            existing = find_person_for_people_import(fields['first_name'], fields['last_name'], fields['email'])
+            if existing:
+                merged, changes = plan_person_merge(existing, fields)
+                item = {
+                    'row': index,
+                    'person_id': existing.id,
+                    'name': existing.name,
+                    'fields': merged,
+                    'changes': changes,
+                    'preview': preview,
+                }
+                if changes:
+                    updates.append(item)
+                else:
+                    unchanged.append(item)
+            else:
+                if fields['member_type'] not in ('Member', 'Non-member'):
+                    raise ValueError('member_type must be Member or Non-member')
+                creates.append({'row': index, 'fields': fields, 'preview': preview})
+        except ValueError as exc:
+            failures.append({'row': index, 'reason': str(exc), 'preview': preview, 'row_data': row})
+    return {
+        'creates': creates,
+        'updates': updates,
+        'unchanged': unchanged,
+        'failures': failures,
+        'fieldnames': fieldnames,
+    }
+
+def commit_people_import(plan):
+    successes = 0
+    failures = list(plan.get('failures') or [])
+    for item in plan.get('creates') or []:
+        person = Person()
+        apply_person_fields(person, item['fields'])
+        db.session.add(person)
+        successes += 1
+    for item in plan.get('updates') or []:
+        person = db.session.get(Person, item['person_id'])
+        if person is None:
+            failures.append({
+                'row': item['row'],
+                'reason': 'matched person was deleted before import completed',
+                'preview': item.get('preview', ''),
+                'row_data': item.get('fields') or {},
+            })
+            continue
+        apply_person_fields(person, item['fields'])
+        successes += 1
+    successes += len(plan.get('unchanged') or [])
+    if successes:
+        created = len(plan.get('creates') or [])
+        updated = len(plan.get('updates') or [])
+        audit(
+            'import',
+            'person',
+            summary=f'{successes} loaded ({created} new, {updated} updated), {len(failures)} failed',
+        )
+        db.session.commit()
+    else:
+        db.session.rollback()
+    return successes, failures
+
 def find_duplicate_gift(person_id, gift_date, amount, fund_id, method, reference):
     return db.session.scalar(
         db.select(Gift).where(
@@ -933,6 +1139,26 @@ def create_app(test_config=None):
                     flash('Person saved.', 'success'); return redirect(url_for('people'))
         return render_template('person_form.html', person=person)
 
+    def finish_people_import(plan, file_error=''):
+        if file_error:
+            successes, failures = 0, []
+        else:
+            successes, failures = commit_people_import(plan)
+        store_import_report({
+            'kind': 'people',
+            'title': 'People import report',
+            'success_count': successes,
+            'failed_count': len(failures),
+            'file_error': file_error,
+            'failures': failures,
+            'fieldnames': plan.get('fieldnames') or [],
+            'back_endpoint': 'people_import',
+            'list_endpoint': 'people',
+            'list_label': 'View people',
+        })
+        clear_people_import_pending()
+        return redirect(url_for('import_report'))
+
     @app.route('/people/import', methods=['GET', 'POST'])
     @require('people_write')
     def people_import():
@@ -944,67 +1170,35 @@ def create_app(test_config=None):
                 try:
                     fieldnames, records = read_csv_records(file, {'first_name', 'last_name', 'member_type'})
                 except ValueError as exc:
-                    store_import_report({
-                        'kind': 'people',
-                        'title': 'People import report',
-                        'success_count': 0,
-                        'failed_count': 0,
-                        'file_error': str(exc),
-                        'failures': [],
-                        'fieldnames': [],
-                        'back_endpoint': 'people_import',
-                        'list_endpoint': 'people',
-                        'list_label': 'View people',
-                    })
-                    return redirect(url_for('import_report'))
-                successes = 0
-                failures = []
-                seen = set()
-                for index, row in enumerate(records, start=2):
-                    first = (row.get('first_name') or '').strip()
-                    last = (row.get('last_name') or '').strip()
-                    kind = (row.get('member_type') or '').strip()
-                    email = (row.get('email') or '').strip()
-                    preview = csv_row_preview(row, fieldnames)
-                    try:
-                        if not first or not last:
-                            raise ValueError('first name and last name are required')
-                        if kind not in ('Member', 'Non-member'):
-                            raise ValueError('member_type must be Member or Non-member')
-                        line1, line2, city, state, zip_code = read_person_address(row)
-                        dup_key = (first.lower(), last.lower(), email.lower())
-                        if dup_key in seen:
-                            raise ValueError('duplicate of another row in this file')
-                        if find_duplicate_person(first, last, email):
-                            raise ValueError('duplicate of an existing person record')
-                        seen.add(dup_key)
-                        db.session.add(Person(
-                            first_name=first, last_name=last, member_type=kind, email=email,
-                            phone=(row.get('phone') or '').strip(), address_line1=line1, address_line2=line2,
-                            city=city, state=state, zip_code=zip_code,
-                        ))
-                        successes += 1
-                    except ValueError as exc:
-                        failures.append({'row': index, 'reason': str(exc), 'preview': preview, 'row_data': row})
-                if successes:
-                    audit('import', 'person', summary=f'{successes} loaded, {len(failures)} failed')
-                    db.session.commit()
-                else:
-                    db.session.rollback()
-                store_import_report({
-                    'kind': 'people',
-                    'title': 'People import report',
-                    'success_count': successes,
-                    'failed_count': len(failures),
-                    'file_error': '',
-                    'failures': failures,
-                    'fieldnames': fieldnames,
-                    'back_endpoint': 'people_import',
-                    'list_endpoint': 'people',
-                    'list_label': 'View people',
-                })
-                return redirect(url_for('import_report'))
+                    return finish_people_import({'fieldnames': [], 'creates': [], 'updates': [], 'unchanged': [], 'failures': []}, file_error=str(exc))
+                plan = prepare_people_import(fieldnames, records)
+                if plan['updates']:
+                    store_people_import_pending(plan)
+                    return redirect(url_for('people_import_confirm'))
+                return finish_people_import(plan)
         return render_template('import.html')
+
+    @app.route('/people/import/confirm', methods=['GET', 'POST'])
+    @require('people_write')
+    def people_import_confirm():
+        plan = load_people_import_pending()
+        if not plan or not plan.get('updates'):
+            flash('No pending people import updates to confirm.', 'error')
+            return redirect(url_for('people_import'))
+        if request.method == 'POST':
+            action = (request.form.get('action') or '').strip()
+            if action == 'cancel':
+                clear_people_import_pending()
+                flash('People import canceled. No person records were changed.', 'success')
+                return redirect(url_for('people_import'))
+            return finish_people_import(plan)
+        return render_template(
+            'people_import_confirm.html',
+            updates=plan['updates'],
+            create_count=len(plan.get('creates') or []),
+            unchanged_count=len(plan.get('unchanged') or []),
+            failed_count=len(plan.get('failures') or []),
+        )
 
     @app.route('/people/template.csv')
     @require('people_write')

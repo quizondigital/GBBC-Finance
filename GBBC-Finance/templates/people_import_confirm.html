@@ -1,0 +1,68 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="heading">
+  <div>
+    <p class="eyebrow">People directory</p>
+    <h1>Confirm people updates</h1>
+    <p class="muted">This CSV matches existing people. Review the planned changes before saving.</p>
+  </div>
+</div>
+
+<section class="callout warning" role="alertdialog" aria-labelledby="import-warning-title" aria-describedby="import-warning-body">
+  <h2 id="import-warning-title">Existing person records will be changed</h2>
+  <p id="import-warning-body">
+    Blank portal fields are filled from the CSV. Portal values are kept when the CSV cell is blank.
+    When both sides have a value, the portal value is overwritten with the CSV value.
+  </p>
+  <p class="muted">
+    {{ updates|length }} person{{ 's' if updates|length != 1 else '' }} will be updated
+    {% if create_count %}, {{ create_count }} new{{ ' records' if create_count != 1 else ' record' }} will be added{% endif %}
+    {% if unchanged_count %}, {{ unchanged_count }} matched with no changes{% endif %}
+    {% if failed_count %}, {{ failed_count }} row{{ 's' if failed_count != 1 else '' }} already failed validation{% endif %}.
+  </p>
+</section>
+
+<section class="card">
+  <div class="card-head">
+    <h2>Planned updates</h2>
+    <p>Only fields that will change are listed for each person.</p>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>Row</th><th>Person</th><th>Changes</th></tr>
+      </thead>
+      <tbody>
+        {% for item in updates %}
+        <tr>
+          <td>{{ item.row }}</td>
+          <td><strong>{{ item.name }}</strong><small>ID {{ item.person_id }}</small></td>
+          <td>
+            <ul class="change-list">
+              {% for change in item.changes %}
+              <li>
+                <strong>{{ change.label }}</strong>:
+                {% if change.from %}
+                <span class="change-from">{{ change.from }}</span> → <span class="change-to">{{ change.to }}</span>
+                {% else %}
+                <span class="change-to">{{ change.to }}</span> <em>(was blank)</em>
+                {% endif %}
+              </li>
+              {% endfor %}
+            </ul>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="card form-card">
+  <form method="post" class="form-actions" style="justify-content:flex-start">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <button class="button" type="submit" name="action" value="confirm">Update existing people</button>
+    <button class="button secondary" type="submit" name="action" value="cancel">Cancel</button>
+  </form>
+</section>
+{% endblock %}

@@ -178,6 +178,7 @@ def test_people_csv_import_report(client):
         'Ada,Member,Member,ada@example.org,555-0100,1 Main St,,Green Brook,NJ,08812\n'
         ',Visitor,Non-member,ben@example.org,555-0101,2 Main St,,Plainfield,NJ,07060\n'
         'Ada,Member,Member,ada@example.org,555-0100,1 Main St,,Green Brook,NJ,08812\n'
+        'Ben,Visitor,Non-member,ben@example.org,555-0101,2 Main St,,Plainfield,NJ,07060\n'
     )
     response = client.post(
         '/people/import',
@@ -185,14 +186,85 @@ def test_people_csv_import_report(client):
         content_type='multipart/form-data',
         follow_redirects=True,
     )
-    assert b'People import report' in response.data
-    assert b'first name and last name are required' in response.data
-    assert b'duplicate of another row in this file' in response.data
+    assert b'Confirm people updates' in response.data
+    assert b'Existing person records will be changed' in response.data
+    assert b'ada@example.org' in response.data
+    confirm = client.post(
+        '/people/import/confirm',
+        data={'csrf_token': token(client), 'action': 'confirm'},
+        follow_redirects=True,
+    )
+    assert b'People import report' in confirm.data
+    assert b'first name and last name are required' in confirm.data
+    assert b'duplicate of another row in this file' in confirm.data
     with client.application.app_context():
         people = db.session.scalars(db.select(Person).order_by(Person.id)).all()
-        # fixture Ada Member + 1 imported
+        # fixture Ada updated + Ben created
         assert len(people) == 2
-        assert people[1].email == 'ada@example.org'
+        ada = next(person for person in people if person.first_name == 'Ada')
+        ben = next(person for person in people if person.first_name == 'Ben')
+        assert ada.email == 'ada@example.org'
+        assert ada.phone == '555-0100'
+        assert ada.address_line1 == '1 Main St'
+        assert ben.email == 'ben@example.org'
+
+def test_people_csv_import_merge_rules_and_cancel(client):
+    login(client, 'sally@example.org')
+    with client.application.app_context():
+        ada = db.session.get(Person, 1)
+        ada.email = 'keep@example.org'
+        ada.phone = ''
+        ada.address_line1 = 'Old Street'
+        ada.city = 'Green Brook'
+        ada.state = 'NJ'
+        ada.zip_code = '08812'
+        db.session.commit()
+    csv_body = (
+        'first_name,last_name,member_type,email,phone,address_line1,address_line2,city,state,zip_code\n'
+        'Ada,Member,Member,,555-9999,New Street,,,\n'
+    )
+    preview = client.post(
+        '/people/import',
+        data={'csrf_token': token(client), 'file': (io.BytesIO(csv_body.encode('utf-8')), 'merge.csv')},
+        content_type='multipart/form-data',
+        follow_redirects=True,
+    )
+    assert b'Confirm people updates' in preview.data
+    assert b'Phone' in preview.data and b'555-9999' in preview.data
+    assert b'Address line 1' in preview.data and b'New Street' in preview.data
+    canceled = client.post(
+        '/people/import/confirm',
+        data={'csrf_token': token(client), 'action': 'cancel'},
+        follow_redirects=True,
+    )
+    assert b'No person records were changed' in canceled.data
+    with client.application.app_context():
+        ada = db.session.get(Person, 1)
+        assert ada.email == 'keep@example.org'
+        assert ada.phone == ''
+        assert ada.address_line1 == 'Old Street'
+    preview = client.post(
+        '/people/import',
+        data={'csrf_token': token(client), 'file': (io.BytesIO(csv_body.encode('utf-8')), 'merge.csv')},
+        content_type='multipart/form-data',
+        follow_redirects=True,
+    )
+    assert b'Confirm people updates' in preview.data
+    confirmed = client.post(
+        '/people/import/confirm',
+        data={'csrf_token': token(client), 'action': 'confirm'},
+        follow_redirects=True,
+    )
+    assert b'People import report' in confirmed.data
+    with client.application.app_context():
+        ada = db.session.get(Person, 1)
+        # blank CSV email keeps portal email; blank city/state/zip keep portal; phone filled; street overwritten
+        assert ada.email == 'keep@example.org'
+        assert ada.phone == '555-9999'
+        assert ada.address_line1 == 'New Street'
+        assert ada.city == 'Green Brook'
+        assert ada.state == 'NJ'
+        assert ada.zip_code == '08812'
 
 def test_empty_csv_import_report(client):
     login(client, 'sally@example.org')
