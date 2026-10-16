@@ -50,8 +50,8 @@ PERMISSIONS = {
     'System Administrator': {'overview', 'people_view', 'reports', 'users', 'roles', 'fiscal', 'feedback', 'settings', 'feedback_review', 'audit_view', 'utilities'},
     'Finance Staff': {'overview', 'people_view', 'people_write', 'gift_view', 'gift_write', 'reports', 'detail_reports', 'statements', 'feedback', 'utilities'},
     'Church Leader': {'overview', 'people_view', 'reports', 'feedback', 'utilities'},
-    'Admin': {'overview', 'people_view', 'people_write', 'gift_view', 'gift_write', 'reports', 'detail_reports', 'statements', 'approvals'},
-    'Finance': {'overview', 'people_view', 'people_write', 'gift_view', 'gift_write', 'reports', 'detail_reports', 'statements'},
+    'Admin': {'overview', 'people_view', 'people_write', 'gift_view', 'gift_write', 'reports', 'detail_reports', 'statements', 'utilities', 'approvals'},
+    'Finance': {'overview', 'people_view', 'people_write', 'gift_view', 'gift_write', 'reports', 'detail_reports', 'statements', 'utilities'},
     'People Viewer': {'people_view'},
 }
 PAGE_MATRIX = [
@@ -684,6 +684,45 @@ PERSON_IMPORT_FIELD_LABELS = {
     'zip_code': 'ZIP code',
 }
 
+def pagination_page_items(page, total_pages, window=2):
+    """Return page numbers with None placeholders for ellipsis gaps."""
+    if total_pages <= 1:
+        return [1] if total_pages == 1 else []
+    pages = {1, total_pages}
+    for number in range(page - window, page + window + 1):
+        if 1 <= number <= total_pages:
+            pages.add(number)
+    ordered = sorted(pages)
+    items = []
+    previous = None
+    for number in ordered:
+        if previous is not None and number - previous > 1:
+            items.append(None)
+        items.append(number)
+        previous = number
+    return items
+
+def build_pager(total, per_page=25, page_arg='page'):
+    total = int(total or 0)
+    total_pages = max(1, (total + per_page - 1) // per_page) if total else 1
+    page = request.args.get(page_arg, 1, type=int) or 1
+    page = min(max(page, 1), total_pages)
+    if total == 0:
+        range_start = range_end = 0
+    else:
+        range_start = (page - 1) * per_page + 1
+        range_end = min(page * per_page, total)
+    return {
+        'page': page,
+        'per_page': per_page,
+        'total': total,
+        'total_pages': total_pages,
+        'range_start': range_start,
+        'range_end': range_end,
+        'page_items': pagination_page_items(page, total_pages),
+        'offset': (page - 1) * per_page,
+    }
+
 def field_is_blank(value):
     return not str(value or '').strip()
 
@@ -1270,9 +1309,7 @@ def create_app(test_config=None):
         if filters:
             count_query = count_query.where(*filters)
         total = db.session.scalar(count_query) or 0
-        total_pages = max(1, (total + per_page - 1) // per_page)
-        page = request.args.get('page', 1, type=int) or 1
-        page = min(max(page, 1), total_pages)
+        pager = build_pager(total, per_page=per_page)
         query = db.select(Person)
         if filters:
             query = query.where(*filters)
@@ -1281,17 +1318,14 @@ def create_app(test_config=None):
             columns = (columns,)
         order = [col.desc() if direction == 'desc' else col.asc() for col in columns]
         order.append(Person.id.desc() if direction == 'desc' else Person.id.asc())
-        people_rows = db.session.scalars(query.order_by(*order).offset((page - 1) * per_page).limit(per_page)).all()
+        people_rows = db.session.scalars(query.order_by(*order).offset(pager['offset']).limit(per_page)).all()
         return render_template(
             'people.html',
             people=people_rows,
             q=term,
             sort=sort,
             direction=direction,
-            page=page,
-            total_pages=total_pages,
-            total=total,
-            per_page=per_page,
+            pager=pager,
         )
 
     @app.route('/people/new', methods=['GET', 'POST'])
@@ -1426,9 +1460,7 @@ def create_app(test_config=None):
         if direction not in ('asc', 'desc'):
             direction = 'desc' if sort == 'date' else 'asc'
         total = db.session.scalar(db.select(db.func.count()).select_from(Gift)) or 0
-        total_pages = max(1, (total + per_page - 1) // per_page)
-        page = request.args.get('page', 1, type=int) or 1
-        page = min(max(page, 1), total_pages)
+        pager = build_pager(total, per_page=per_page)
         query = db.select(Gift)
         if sort == 'contributor':
             query = query.join(Person, Gift.person_id == Person.id)
@@ -1439,16 +1471,13 @@ def create_app(test_config=None):
             columns = (columns,)
         order = [col.desc() if direction == 'desc' else col.asc() for col in columns]
         order.append(Gift.id.desc() if direction == 'desc' else Gift.id.asc())
-        gifts = db.session.scalars(query.order_by(*order).offset((page - 1) * per_page).limit(per_page)).all()
+        gifts = db.session.scalars(query.order_by(*order).offset(pager['offset']).limit(per_page)).all()
         return render_template(
             'contributions.html',
             gifts=gifts,
             sort=sort,
             direction=direction,
-            page=page,
-            total_pages=total_pages,
-            total=total,
-            per_page=per_page,
+            pager=pager,
         )
 
     @app.route('/contributions/import', methods=['GET', 'POST'])
@@ -1674,8 +1703,29 @@ def create_app(test_config=None):
         for gift in gifts:
             period = gift.date.strftime('%b %Y')
             monthly[period] = monthly.get(period, Decimal('0')) + gift.amount
+        detail_gifts = gifts if can_detail else []
+        pager = build_pager(len(detail_gifts), per_page=25) if can_detail else None
+        page_gifts = detail_gifts[pager['offset']:pager['offset'] + pager['per_page']] if pager else []
+        filter_args = {
+            'year_id': request.args.get('year_id') or None,
+            'start_date': request.args.get('start_date') or None,
+            'end_date': request.args.get('end_date') or None,
+            'minimum_total': request.args.get('minimum_total') or None,
+            'person_id': request.args.get('person_id') or None,
+        }
         audit('view', 'report', summary='aggregate' if not persons else 'detail'); db.session.commit()
-        return render_template('reports.html', years=years, people=persons, gifts=gifts if can_detail else [], total=total, funds=funds, monthly=monthly, selected_year=request.args.get('year_id', type=int))
+        return render_template(
+            'reports.html',
+            years=years,
+            people=persons,
+            gifts=page_gifts,
+            total=total,
+            funds=funds,
+            monthly=monthly,
+            selected_year=request.args.get('year_id', type=int),
+            pager=pager,
+            filter_args=filter_args,
+        )
 
     @app.route('/reports/export.xlsx')
     @require('detail_reports')

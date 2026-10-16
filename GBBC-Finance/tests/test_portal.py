@@ -225,10 +225,12 @@ def test_finance_signup_role_cannot_access_approvals(client):
     assert b'Ada Member' in reports
     assert b'/reports/statements/1.pdf' in reports
     assert client.get('/reports/statements/1.pdf').status_code == 200
+    assert client.get('/utilities').status_code == 200
     assert client.get('/help').status_code == 200
     assert client.get('/approvals').status_code == 403
     home = client.get('/').data
     assert b'Reports</span>' in home
+    assert b'Utilities</span>' in home
     assert b'Approvals</span>' not in home
 
 def test_admin_signup_role_can_approve(client):
@@ -412,10 +414,13 @@ def test_people_sort_and_pagination(client):
     assert 'sort=name' in default and '▲' in default
     assert default.count('<tr>') == 26  # header + 25 rows
     assert 'aria-label="People pages"' in default
-    assert '>First<' in default and '>Last<' in default
+    assert 'Back' in default and 'Next' in default
+    assert '1-25 of 31' in default
+    assert 'pager-goto' in default and '>Go<' in default
     page2 = client.get('/people?page=2').data.decode()
     assert page2.count('<tr>') == 7  # header + 6 remaining (31 total with fixture Ada)
     assert 'aria-current="page">2<' in page2
+    assert '26-31 of 31' in page2
     by_contact = client.get('/people?sort=contact&dir=asc').data.decode()
     assert 'sort=contact' in by_contact
 
@@ -430,12 +435,33 @@ def test_contributions_pagination(client):
         db.session.commit()
     page1 = client.get('/contributions').data.decode()
     assert 'aria-label="Contributions pages"' in page1
-    assert '>First<' in page1 and '>Last<' in page1
+    assert 'Back' in page1 and 'Next' in page1
+    assert '1-25 of 30' in page1
     assert page1.count('<tr>') == 26  # header + 25 rows
     assert 'page=2' in page1
     page2 = client.get('/contributions?page=2').data.decode()
     assert page2.count('<tr>') == 6  # header + 5 remaining
     assert 'aria-current="page">2<' in page2
+    assert '26-30 of 30' in page2
+
+def test_reports_pagination_keeps_filters(client):
+    login(client, 'sally@example.org')
+    with client.application.app_context():
+        gifts = [
+            Gift(person_id=1, fiscal_year_id=1, fund_id=1, date=date(2026, 2, 1 + (i % 27)), amount=5 + i, method='Cash', entered_by_id=1)
+            for i in range(40)
+        ]
+        db.session.add_all(gifts)
+        db.session.commit()
+    filtered = client.get('/reports?year_id=1&start_date=2026-02-01&end_date=2026-02-28').data.decode()
+    assert 'aria-label="Reports pages"' in filtered
+    assert 'Contribution detail' in filtered
+    assert '1-25 of' in filtered
+    assert 'year_id=1' in filtered and 'start_date=2026-02-01' in filtered
+    page2 = client.get('/reports?year_id=1&start_date=2026-02-01&end_date=2026-02-28&page=2').data.decode()
+    assert 'aria-current="page">2<' in page2
+    assert 'year_id=1' in page2 and 'start_date=2026-02-01' in page2
+    assert 'pager-goto' in page2
 
 def test_contributions_sortable_default_date_desc(client):
     login(client, 'sally@example.org')

@@ -1,0 +1,43 @@
+{# Shared pager matching Back/Next, ellipsis pages, range summary, and Go-to-page. #}
+{% macro render_pagination(aria_label, page_url, pager, preserve=None) -%}
+{%- if pager and pager.total > 0 -%}
+<nav class="pager" aria-label="{{ aria_label }}">
+  <div class="pager-top">
+    <div class="pager-nav">
+      {% if pager.page > 1 %}
+      <a class="page-link pager-step" href="{{ page_url(pager.page - 1) }}"><span aria-hidden="true">‹</span> Back</a>
+      {% else %}
+      <span class="page-link pager-step disabled"><span aria-hidden="true">‹</span> Back</span>
+      {% endif %}
+      {% for item in pager.page_items %}
+        {% if item is none %}
+        <span class="page-link ellipsis" aria-hidden="true">…</span>
+        {% elif item == pager.page %}
+        <span class="page-link current" aria-current="page">{{ item }}</span>
+        {% else %}
+        <a class="page-link" href="{{ page_url(item) }}">{{ item }}</a>
+        {% endif %}
+      {% endfor %}
+      {% if pager.page < pager.total_pages %}
+      <a class="page-link pager-step" href="{{ page_url(pager.page + 1) }}">Next <span aria-hidden="true">›</span></a>
+      {% else %}
+      <span class="page-link pager-step disabled">Next <span aria-hidden="true">›</span></span>
+      {% endif %}
+    </div>
+    {% if pager.total_pages > 1 %}
+    <form class="pager-goto" method="get" action="">
+      {% for key, value in (preserve or {}).items() %}
+        {% if value is not none and value != '' %}
+        <input type="hidden" name="{{ key }}" value="{{ value }}">
+        {% endif %}
+      {% endfor %}
+      <label class="pager-goto-label" for="pager-page-{{ aria_label|replace(' ', '-')|lower }}">Page</label>
+      <input id="pager-page-{{ aria_label|replace(' ', '-')|lower }}" class="pager-goto-input" type="number" name="page" min="1" max="{{ pager.total_pages }}" value="{{ pager.page }}" required>
+      <button class="pager-goto-btn" type="submit">Go</button>
+    </form>
+    {% endif %}
+  </div>
+  <p class="pager-summary">{{ '{:,}'.format(pager.range_start) }}-{{ '{:,}'.format(pager.range_end) }} of {{ '{:,}'.format(pager.total) }}</p>
+</nav>
+{%- endif -%}
+{%- endmacro %}
