@@ -220,6 +220,11 @@ def test_finance_signup_role_cannot_access_approvals(client):
     assert client.get('/people').status_code == 200
     assert client.get('/contributions').status_code == 200
     assert client.get('/reports').status_code == 200
+    reports = client.get('/reports').data
+    assert b'Giving statements' in reports
+    assert b'Ada Member' in reports
+    assert b'/reports/statements/1.pdf' in reports
+    assert client.get('/reports/statements/1.pdf').status_code == 200
     assert client.get('/help').status_code == 200
     assert client.get('/approvals').status_code == 403
     home = client.get('/').data

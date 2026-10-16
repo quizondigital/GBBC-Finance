@@ -50,8 +50,8 @@ PERMISSIONS = {
     'System Administrator': {'overview', 'people_view', 'reports', 'users', 'roles', 'fiscal', 'feedback', 'settings', 'feedback_review', 'audit_view', 'utilities'},
     'Finance Staff': {'overview', 'people_view', 'people_write', 'gift_view', 'gift_write', 'reports', 'detail_reports', 'statements', 'feedback', 'utilities'},
     'Church Leader': {'overview', 'people_view', 'reports', 'feedback', 'utilities'},
-    'Admin': {'overview', 'people_view', 'people_write', 'gift_view', 'gift_write', 'reports', 'approvals'},
-    'Finance': {'overview', 'people_view', 'people_write', 'gift_view', 'gift_write', 'reports'},
+    'Admin': {'overview', 'people_view', 'people_write', 'gift_view', 'gift_write', 'reports', 'detail_reports', 'statements', 'approvals'},
+    'Finance': {'overview', 'people_view', 'people_write', 'gift_view', 'gift_write', 'reports', 'detail_reports', 'statements'},
     'People Viewer': {'people_view'},
 }
 PAGE_MATRIX = [
@@ -1662,7 +1662,10 @@ def create_app(test_config=None):
         if request.args.get('person_id') and 'detail_reports' not in PERMISSIONS[g.user.role]: abort(403)
         if request.args.get('minimum_total') and 'detail_reports' not in PERMISSIONS[g.user.role]: abort(403)
         years = db.session.scalars(db.select(FiscalYear).order_by(FiscalYear.start_date.desc())).all()
-        persons = db.session.scalars(db.select(Person).order_by(Person.last_name)).all() if 'detail_reports' in PERMISSIONS[g.user.role] else []
+        role_perms = PERMISSIONS.get(g.user.role, set())
+        can_detail = 'detail_reports' in role_perms
+        can_statements = 'statements' in role_perms
+        persons = db.session.scalars(db.select(Person).order_by(Person.last_name, Person.first_name)).all() if (can_detail or can_statements) else []
         gifts = report_gifts()
         total = sum((x.amount for x in gifts), Decimal('0'))
         funds = {}
@@ -1672,7 +1675,7 @@ def create_app(test_config=None):
             period = gift.date.strftime('%b %Y')
             monthly[period] = monthly.get(period, Decimal('0')) + gift.amount
         audit('view', 'report', summary='aggregate' if not persons else 'detail'); db.session.commit()
-        return render_template('reports.html', years=years, people=persons, gifts=gifts if 'detail_reports' in PERMISSIONS[g.user.role] else [], total=total, funds=funds, monthly=monthly, selected_year=request.args.get('year_id', type=int))
+        return render_template('reports.html', years=years, people=persons, gifts=gifts if can_detail else [], total=total, funds=funds, monthly=monthly, selected_year=request.args.get('year_id', type=int))
 
     @app.route('/reports/export.xlsx')
     @require('detail_reports')
