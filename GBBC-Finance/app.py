@@ -989,6 +989,9 @@ def person_statement_address(person):
         street, city_state_zip = lines[0], ''
     return street, city_state_zip
 
+CHURCH_WEBSITE_URL = 'https://www.greenbrookchurch.org'
+CHURCH_WEBSITE_LABEL = 'www.greenbrookchurch.org'
+
 def replace_docx_text(docx_path, replacements):
     from docx import Document
     document = Document(str(docx_path))
@@ -1002,6 +1005,55 @@ def replace_docx_text(docx_path, replacements):
         paragraph.runs[0].text = updated
         for run in paragraph.runs[1:]:
             run.text = ''
+    document.save(str(docx_path))
+
+def statement_letter_date(year_label):
+    """Giving letters for year Y are dated January 31 of Y+1."""
+    digits = re.search(r'(\d{4})', str(year_label or ''))
+    year = int(digits.group(1)) if digits else date.today().year
+    return f'January 31, {year + 1}'
+
+def _bold_amount_in_paragraph(paragraph, amount_text):
+    display = amount_text if str(amount_text).startswith('$') else f'${amount_text}'
+    full = paragraph.text
+    if display in full:
+        match = display
+    elif display.replace('$', '') in full:
+        match = display.replace('$', '')
+        display = f'${match}' if not match.startswith('$') else match
+    else:
+        return
+    before, after = full.split(match, 1)
+    if match != display and before.endswith('$'):
+        before = before[:-1]
+    for run in paragraph.runs:
+        run.text = ''
+    if not paragraph.runs:
+        paragraph.add_run('')
+    paragraph.runs[0].text = before
+    paragraph.runs[0].bold = False
+    amount_run = paragraph.add_run(display)
+    amount_run.bold = True
+    paragraph.add_run(after).bold = False
+
+def enhance_giving_letter_docx(docx_path, person_name, amount_text, letter_date):
+    """Insert letter date, bold Dear-name and gift amount."""
+    from docx import Document
+    document = Document(str(docx_path))
+    inserted_date = False
+    for paragraph in document.paragraphs:
+        text = paragraph.text.strip()
+        if not inserted_date and text == person_name:
+            date_paragraph = paragraph.insert_paragraph_before(letter_date)
+            for run in date_paragraph.runs:
+                run.bold = False
+            inserted_date = True
+        if text.startswith('Dear ') and person_name in text:
+            for run in paragraph.runs:
+                if run.text.strip() == person_name or run.text == person_name:
+                    run.bold = True
+        if 'amount of' in text.lower() and (amount_text in text or amount_text.replace('$', '') in text):
+            _bold_amount_in_paragraph(paragraph, amount_text)
     document.save(str(docx_path))
 
 def render_giving_letter_docx(person, year_label, amount_text):
@@ -1021,6 +1073,12 @@ def render_giving_letter_docx(person, year_label, amount_text):
     document.write(str(filled))
     # Template hard-codes calendar year as split runs ("202" + "5"); normalize to statement year.
     replace_docx_text(filled, {'2025': str(year_label)})
+    enhance_giving_letter_docx(
+        filled,
+        person_name=person.name,
+        amount_text=amount_text if amount_text.startswith('$') else f'${amount_text}',
+        letter_date=statement_letter_date(year_label),
+    )
     return filled
 
 def convert_docx_to_pdf(docx_path):
@@ -1038,6 +1096,30 @@ def convert_docx_to_pdf(docx_path):
         raise RuntimeError(detail)
     return polish_giving_letter_pdf(pdf_path)
 
+def draw_letter_header(pdf, page_w, page_h):
+    """Draw letterhead artwork and clickable website matching the visible URL."""
+    header = giving_letter_header_path()
+    draw_h = 0
+    if header.exists():
+        img = ImageReader(str(header))
+        iw, ih = img.getSize()
+        draw_h = page_w * (ih / float(iw))
+        pdf.setFillColor(colors.white)
+        pdf.rect(0, page_h - draw_h - 2, page_w, draw_h + 4, fill=1, stroke=0)
+        pdf.drawImage(img, 0, page_h - draw_h, width=page_w, height=draw_h, mask='auto')
+        # Clickable area over the visible www.greenbrookchurch.org text (lower-right of banner).
+        link_left = page_w * 0.62
+        link_right = page_w - 18
+        link_bottom = page_h - draw_h + draw_h * 0.08
+        link_top = page_h - draw_h + draw_h * 0.42
+        pdf.linkURL(
+            CHURCH_WEBSITE_URL,
+            (link_left, link_bottom, link_right, link_top),
+            relative=0,
+            thickness=0,
+        )
+    return draw_h
+
 def polish_giving_letter_pdf(pdf_path):
     """Restore letterhead LibreOffice drops from the layered Word header."""
     pdf_path = Path(pdf_path)
@@ -1051,14 +1133,7 @@ def polish_giving_letter_pdf(pdf_path):
 
     overlay = io.BytesIO()
     c = canvas.Canvas(overlay, pagesize=(page_w, page_h))
-    header = giving_letter_header_path()
-    if header.exists():
-        img = ImageReader(str(header))
-        iw, ih = img.getSize()
-        draw_h = page_w * (ih / float(iw))
-        c.setFillColor(colors.white)
-        c.rect(0, page_h - draw_h - 2, page_w, draw_h + 4, fill=1, stroke=0)
-        c.drawImage(img, 0, page_h - draw_h, width=page_w, height=draw_h, mask='auto')
+    draw_letter_header(c, page_w, page_h)
     # LibreOffice often pushes the scripture citation onto a spill page; keep page 1 only.
     if '2 Corinthians 9:6-8' not in first_page_text:
         c.setFillColor(colors.black)
@@ -1078,20 +1153,32 @@ def polish_giving_letter_pdf(pdf_path):
 def build_itemized_statement_pdf(person, gifts, church_name, year_label, amount_text):
     out = io.BytesIO()
     pdf = canvas.Canvas(out, pagesize=letter, pageCompression=0 if current_app.config.get('TESTING') else 1)
-    left, width, y = 54, 504, 740
-    pdf.setFillColor(colors.HexColor('#174e3b'))
-    pdf.setFont('Helvetica-Bold', 14)
-    pdf.drawString(left, y, church_name)
-    pdf.setFillColor(colors.black)
-    pdf.setFont('Helvetica', 10)
-    pdf.drawString(left, 720, f'Itemized contributions for {person.name} — {year_label}')
-    y = 690
-    pdf.setFont('Helvetica-Bold', 10)
-    pdf.drawString(left, y, 'Date'); pdf.drawString(140, y, 'Fund'); pdf.drawRightString(left + width, y, 'Amount'); y -= 20
+    page_w, page_h = letter
+    left, width = 54, 504
+
+    def start_page():
+        header_h = draw_letter_header(pdf, page_w, page_h)
+        y = page_h - header_h - 28
+        pdf.setFillColor(colors.HexColor('#174e3b'))
+        pdf.setFont('Helvetica-Bold', 14)
+        pdf.drawString(left, y, church_name)
+        pdf.setFillColor(colors.black)
+        y -= 20
+        pdf.setFont('Helvetica', 10)
+        pdf.drawString(left, y, f'Itemized contributions for {person.name} — {year_label}')
+        y -= 28
+        pdf.setFont('Helvetica-Bold', 10)
+        pdf.drawString(left, y, 'Date')
+        pdf.drawString(140, y, 'Fund')
+        pdf.drawRightString(left + width, y, 'Amount')
+        return y - 20
+
+    y = start_page()
     pdf.setFont('Helvetica', 10)
     for gift in gifts:
         if y < 72:
-            pdf.showPage(); y = 740
+            pdf.showPage()
+            y = start_page()
             pdf.setFont('Helvetica', 10)
         pdf.drawString(left, y, gift.date.isoformat())
         pdf.drawString(140, y, gift.fund.name[:50])

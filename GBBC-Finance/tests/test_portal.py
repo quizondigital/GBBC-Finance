@@ -111,6 +111,7 @@ def test_exports_and_role_matrix(client):
     letter = pdf_text(pdf.data)
     assert 'Romella Seepaul' in letter
     assert 'Dear Ada' in letter
+    assert 'January 31, 2027' in letter
     assert '2 Corinthians 9:6-8' in letter
     assert 'Itemized contributions' in letter
     # Letterhead is stamped as artwork (logo, church name, tax ID, website, green banner).
@@ -119,6 +120,22 @@ def test_exports_and_role_matrix(client):
     xobjects = letter_page['/Resources']['/XObject'].get_object()
     images = [xobjects[name] for name in xobjects if xobjects[name].get('/Subtype') == '/Image']
     assert any(img.get('/Width', 0) >= 1000 and img.get('/Height', 0) >= 200 for img in images)
+    # Website hyperlink matches the visible www.greenbrookchurch.org label.
+    annots = letter_page.get('/Annots') or []
+    uris = []
+    for ann in annots:
+        action = ann.get_object().get('/A')
+        if action:
+            uri = action.get_object().get('/URI')
+            if uri:
+                uris.append(str(uri))
+    assert any('www.greenbrookchurch.org' in uri for uri in uris)
+    # Itemized pages also carry the green letterhead artwork.
+    assert len(reader.pages) >= 2
+    itemized = reader.pages[1]
+    item_xobjects = itemized['/Resources']['/XObject'].get_object()
+    item_images = [item_xobjects[name] for name in item_xobjects if item_xobjects[name].get('/Subtype') == '/Image']
+    assert any(img.get('/Width', 0) >= 1000 and img.get('/Height', 0) >= 200 for img in item_images)
     xlsx = client.get('/reports/export.xlsx')
     assert xlsx.status_code == 200 and xlsx.data.startswith(b'PK')
     assert client.get('/admin/settings').status_code == 200
