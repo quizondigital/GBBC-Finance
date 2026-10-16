@@ -1,7 +1,7 @@
 {% extends 'base.html' %}
 {% from '_pagination.html' import render_pagination %}
 {% macro report_page_url(page_num) -%}
-  {{ url_for('reports', page=page_num, year_id=filter_args.year_id, start_date=filter_args.start_date, end_date=filter_args.end_date, minimum_total=filter_args.minimum_total, person_id=filter_args.person_id) }}
+  {{ url_for('reports', page=page_num, year_id=filter_args.year_id, start_date=filter_args.start_date, end_date=filter_args.end_date, minimum_total=filter_args.minimum_total, person_id=filter_args.person_id, per_page=filter_args.per_page) }}
 {%- endmacro %}
 {% block content %}
 <div class="heading">

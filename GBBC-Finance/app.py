@@ -702,8 +702,17 @@ def pagination_page_items(page, total_pages, window=2):
         previous = number
     return items
 
-def build_pager(total, per_page=25, page_arg='page'):
+PER_PAGE_OPTIONS = (10, 25, 50, 100, 250)
+
+def resolve_per_page(default=25):
+    raw = request.args.get('per_page', type=int)
+    if raw in PER_PAGE_OPTIONS:
+        return raw
+    return default if default in PER_PAGE_OPTIONS else 25
+
+def build_pager(total, per_page=None, page_arg='page'):
     total = int(total or 0)
+    per_page = resolve_per_page(25 if per_page is None else per_page)
     total_pages = max(1, (total + per_page - 1) // per_page) if total else 1
     page = request.args.get(page_arg, 1, type=int) or 1
     page = min(max(page, 1), total_pages)
@@ -715,6 +724,7 @@ def build_pager(total, per_page=25, page_arg='page'):
     return {
         'page': page,
         'per_page': per_page,
+        'per_page_options': PER_PAGE_OPTIONS,
         'total': total,
         'total_pages': total_pages,
         'range_start': range_start,
@@ -1287,7 +1297,6 @@ def create_app(test_config=None):
     @app.route('/people')
     @require('people_view')
     def people():
-        per_page = 25
         sort_keys = {
             'name': (Person.last_name, Person.first_name),
             'type': Person.member_type,
@@ -1309,7 +1318,7 @@ def create_app(test_config=None):
         if filters:
             count_query = count_query.where(*filters)
         total = db.session.scalar(count_query) or 0
-        pager = build_pager(total, per_page=per_page)
+        pager = build_pager(total)
         query = db.select(Person)
         if filters:
             query = query.where(*filters)
@@ -1318,7 +1327,7 @@ def create_app(test_config=None):
             columns = (columns,)
         order = [col.desc() if direction == 'desc' else col.asc() for col in columns]
         order.append(Person.id.desc() if direction == 'desc' else Person.id.asc())
-        people_rows = db.session.scalars(query.order_by(*order).offset(pager['offset']).limit(per_page)).all()
+        people_rows = db.session.scalars(query.order_by(*order).offset(pager['offset']).limit(pager['per_page'])).all()
         return render_template(
             'people.html',
             people=people_rows,
@@ -1443,7 +1452,6 @@ def create_app(test_config=None):
     @app.route('/contributions')
     @require('gift_view')
     def contributions():
-        per_page = 25
         sort_keys = {
             'date': Gift.date,
             'contributor': (Person.last_name, Person.first_name),
@@ -1460,7 +1468,7 @@ def create_app(test_config=None):
         if direction not in ('asc', 'desc'):
             direction = 'desc' if sort == 'date' else 'asc'
         total = db.session.scalar(db.select(db.func.count()).select_from(Gift)) or 0
-        pager = build_pager(total, per_page=per_page)
+        pager = build_pager(total)
         query = db.select(Gift)
         if sort == 'contributor':
             query = query.join(Person, Gift.person_id == Person.id)
@@ -1471,7 +1479,7 @@ def create_app(test_config=None):
             columns = (columns,)
         order = [col.desc() if direction == 'desc' else col.asc() for col in columns]
         order.append(Gift.id.desc() if direction == 'desc' else Gift.id.asc())
-        gifts = db.session.scalars(query.order_by(*order).offset(pager['offset']).limit(per_page)).all()
+        gifts = db.session.scalars(query.order_by(*order).offset(pager['offset']).limit(pager['per_page'])).all()
         return render_template(
             'contributions.html',
             gifts=gifts,
@@ -1704,7 +1712,7 @@ def create_app(test_config=None):
             period = gift.date.strftime('%b %Y')
             monthly[period] = monthly.get(period, Decimal('0')) + gift.amount
         detail_gifts = gifts if can_detail else []
-        pager = build_pager(len(detail_gifts), per_page=25) if can_detail else None
+        pager = build_pager(len(detail_gifts)) if can_detail else None
         page_gifts = detail_gifts[pager['offset']:pager['offset'] + pager['per_page']] if pager else []
         filter_args = {
             'year_id': request.args.get('year_id') or None,
@@ -1712,6 +1720,7 @@ def create_app(test_config=None):
             'end_date': request.args.get('end_date') or None,
             'minimum_total': request.args.get('minimum_total') or None,
             'person_id': request.args.get('person_id') or None,
+            'per_page': pager['per_page'] if pager else None,
         }
         audit('view', 'report', summary='aggregate' if not persons else 'detail'); db.session.commit()
         return render_template(

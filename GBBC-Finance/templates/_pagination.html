@@ -1,4 +1,4 @@
-{# Shared pager matching Back/Next, ellipsis pages, range summary, and Go-to-page. #}
+{# Shared pager: Back/Next, ellipsis pages, range summary, Go-to-page, results per page. #}
 {% macro render_pagination(aria_label, page_url, pager, preserve=None) -%}
 {%- if pager and pager.total > 0 -%}
 <nav class="pager" aria-label="{{ aria_label }}">
@@ -24,18 +24,37 @@
       <span class="page-link pager-step disabled">Next <span aria-hidden="true">›</span></span>
       {% endif %}
     </div>
-    {% if pager.total_pages > 1 %}
-    <form class="pager-goto" method="get" action="">
-      {% for key, value in (preserve or {}).items() %}
-        {% if value is not none and value != '' %}
-        <input type="hidden" name="{{ key }}" value="{{ value }}">
+    <div class="pager-controls">
+      <form class="pager-per-page" method="get" action="">
+        {% for key, value in (preserve or {}).items() %}
+          {% if key != 'per_page' and key != 'page' and value is not none and value != '' %}
+          <input type="hidden" name="{{ key }}" value="{{ value }}">
+          {% endif %}
+        {% endfor %}
+        <input type="hidden" name="page" value="1">
+        <label class="pager-per-page-label" for="pager-per-page-{{ aria_label|replace(' ', '-')|lower }}">Result per page</label>
+        <select id="pager-per-page-{{ aria_label|replace(' ', '-')|lower }}" class="pager-per-page-select" name="per_page" onchange="this.form.submit()">
+          {% for option in pager.per_page_options %}
+          <option value="{{ option }}" {% if option == pager.per_page %}selected{% endif %}>{{ option }}</option>
+          {% endfor %}
+        </select>
+      </form>
+      {% if pager.total_pages > 1 %}
+      <form class="pager-goto" method="get" action="">
+        {% for key, value in (preserve or {}).items() %}
+          {% if key != 'page' and value is not none and value != '' %}
+          <input type="hidden" name="{{ key }}" value="{{ value }}">
+          {% endif %}
+        {% endfor %}
+        {% if not preserve or not preserve.get('per_page') %}
+        <input type="hidden" name="per_page" value="{{ pager.per_page }}">
         {% endif %}
-      {% endfor %}
-      <label class="pager-goto-label" for="pager-page-{{ aria_label|replace(' ', '-')|lower }}">Page</label>
-      <input id="pager-page-{{ aria_label|replace(' ', '-')|lower }}" class="pager-goto-input" type="number" name="page" min="1" max="{{ pager.total_pages }}" value="{{ pager.page }}" required>
-      <button class="pager-goto-btn" type="submit">Go</button>
-    </form>
-    {% endif %}
+        <label class="pager-goto-label" for="pager-page-{{ aria_label|replace(' ', '-')|lower }}">Page</label>
+        <input id="pager-page-{{ aria_label|replace(' ', '-')|lower }}" class="pager-goto-input" type="number" name="page" min="1" max="{{ pager.total_pages }}" value="{{ pager.page }}" required>
+        <button class="pager-goto-btn" type="submit">Go</button>
+      </form>
+      {% endif %}
+    </div>
   </div>
   <p class="pager-summary">{{ '{:,}'.format(pager.range_start) }}-{{ '{:,}'.format(pager.range_end) }} of {{ '{:,}'.format(pager.total) }}</p>
 </nav>

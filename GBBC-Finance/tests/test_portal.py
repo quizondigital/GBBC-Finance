@@ -417,10 +417,16 @@ def test_people_sort_and_pagination(client):
     assert 'Back' in default and 'Next' in default
     assert '1-25 of 31' in default
     assert 'pager-goto' in default and '>Go<' in default
+    assert 'Result per page' in default
+    assert 'name="per_page"' in default
+    assert '>10<' in default and '>25<' in default and '>50<' in default and '>100<' in default and '>250<' in default
     page2 = client.get('/people?page=2').data.decode()
     assert page2.count('<tr>') == 7  # header + 6 remaining (31 total with fixture Ada)
     assert 'aria-current="page">2<' in page2
     assert '26-31 of 31' in page2
+    per50 = client.get('/people?per_page=50').data.decode()
+    assert per50.count('<tr>') == 32  # header + all 31
+    assert '1-31 of 31' in per50
     by_contact = client.get('/people?sort=contact&dir=asc').data.decode()
     assert 'sort=contact' in by_contact
 
@@ -437,12 +443,16 @@ def test_contributions_pagination(client):
     assert 'aria-label="Contributions pages"' in page1
     assert 'Back' in page1 and 'Next' in page1
     assert '1-25 of 30' in page1
+    assert 'Result per page' in page1
     assert page1.count('<tr>') == 26  # header + 25 rows
     assert 'page=2' in page1
     page2 = client.get('/contributions?page=2').data.decode()
     assert page2.count('<tr>') == 6  # header + 5 remaining
     assert 'aria-current="page">2<' in page2
     assert '26-30 of 30' in page2
+    ten = client.get('/contributions?per_page=10').data.decode()
+    assert ten.count('<tr>') == 11
+    assert '1-10 of 30' in ten
 
 def test_reports_pagination_keeps_filters(client):
     login(client, 'sally@example.org')
@@ -457,11 +467,15 @@ def test_reports_pagination_keeps_filters(client):
     assert 'aria-label="Reports pages"' in filtered
     assert 'Contribution detail' in filtered
     assert '1-25 of' in filtered
+    assert 'Result per page' in filtered
     assert 'year_id=1' in filtered and 'start_date=2026-02-01' in filtered
     page2 = client.get('/reports?year_id=1&start_date=2026-02-01&end_date=2026-02-28&page=2').data.decode()
     assert 'aria-current="page">2<' in page2
     assert 'year_id=1' in page2 and 'start_date=2026-02-01' in page2
     assert 'pager-goto' in page2
+    fifty = client.get('/reports?year_id=1&start_date=2026-02-01&end_date=2026-02-28&per_page=50').data.decode()
+    assert '1-40 of 40' in fifty or '1-' in fifty and 'of 40' in fifty
+    assert 'per_page=50' in fifty
 
 def test_contributions_sortable_default_date_desc(client):
     login(client, 'sally@example.org')

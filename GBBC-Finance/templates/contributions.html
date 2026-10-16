@@ -9,7 +9,7 @@
   <th><a class="sort-link {{ 'active' if sort == column }}" href="{{ url_for('contributions', sort=column, dir=next_dir) }}">{{ label }}{% if sort == column %} <span class="sort-ind" aria-hidden="true">{{ '▼' if direction == 'desc' else '▲' }}</span>{% endif %}</a></th>
 {%- endmacro %}
 {% macro page_url(page_num) -%}
-  {{ url_for('contributions', sort=sort, dir=direction, page=page_num) }}
+  {{ url_for('contributions', sort=sort, dir=direction, page=page_num, per_page=pager.per_page) }}
 {%- endmacro %}
 {% block content %}
 <div class="heading">
@@ -69,6 +69,6 @@
       </tbody>
     </table>
   </div>
-  {{ render_pagination('Contributions pages', page_url, pager, {'sort': sort, 'dir': direction}) }}
+  {{ render_pagination('Contributions pages', page_url, pager, {'sort': sort, 'dir': direction, 'per_page': pager.per_page}) }}
 </section>
 {% endblock %}
