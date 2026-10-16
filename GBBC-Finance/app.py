@@ -991,6 +991,14 @@ def person_statement_address(person):
 
 CHURCH_WEBSITE_URL = 'https://www.greenbrookchurch.org'
 CHURCH_WEBSITE_LABEL = 'www.greenbrookchurch.org'
+GIVING_LETTER_VERSE = (
+    'The point is this: whoever sows sparingly will also reap sparingly, and whoever sows '
+    'bountifully will also reap bountifully. Each one must give as he has decided in his heart, '
+    'not reluctantly or under compulsion, for God loves a cheerful giver. And God is able to '
+    'make all grace abound to you, so that having all sufficiency in all things at all times, '
+    'you may abound in every good work.'
+)
+GIVING_LETTER_VERSE_REF = '2 Corinthians 9:6-8'
 
 def replace_docx_text(docx_path, replacements):
     from docx import Document
@@ -1036,15 +1044,43 @@ def _bold_amount_in_paragraph(paragraph, amount_text):
     amount_run.bold = True
     paragraph.add_run(after).bold = False
 
+def _clear_docx_paragraph(paragraph):
+    for run in paragraph.runs:
+        run.text = ''
+    if not paragraph.runs:
+        paragraph.add_run('')
+
+def _remove_docx_element(element):
+    parent = element.getparent()
+    if parent is not None:
+        parent.remove(element)
+
 def enhance_giving_letter_docx(docx_path, person_name, amount_text, letter_date):
-    """Insert letter date, bold Dear-name and gift amount."""
+    """Insert letter date, tighten page-1 spacing, bold Dear-name and gift amount."""
     from docx import Document
+    from docx.shared import Inches, Pt
+
     document = Document(str(docx_path))
+
+    # Drop the layered Word letterhead — polish stamps a clean header image.
+    # Keep body just under that banner so the header–date gap is not wasted.
+    for section in document.sections:
+        section.top_margin = Inches(1.5)
+        section.bottom_margin = Inches(0.85)
+        header = section.header
+        for table in list(header.tables):
+            _remove_docx_element(table._element)
+        for paragraph in header.paragraphs:
+            _clear_docx_paragraph(paragraph)
+
+    # Leading tab/blank lines push the date down under the stamped header.
+    while document.paragraphs and not document.paragraphs[0].text.strip():
+        _remove_docx_element(document.paragraphs[0]._element)
+
     inserted_date = False
-    for paragraph in document.paragraphs:
+    for paragraph in list(document.paragraphs):
         text = paragraph.text.strip()
         if not inserted_date and text == person_name:
-            from docx.shared import Pt
             date_paragraph = paragraph.insert_paragraph_before(letter_date)
             for run in date_paragraph.runs:
                 run.bold = False
@@ -1060,6 +1096,29 @@ def enhance_giving_letter_docx(docx_path, person_name, amount_text, letter_date)
                     run.bold = True
         if 'amount of' in text.lower() and (amount_text in text or amount_text.replace('$', '') in text):
             _bold_amount_in_paragraph(paragraph, amount_text)
+
+    # Template has two empty paragraphs between Sincerely and Romella; keep one.
+    paragraphs = list(document.paragraphs)
+    for index, paragraph in enumerate(paragraphs):
+        if not paragraph.text.strip().startswith('Sincerely'):
+            continue
+        blanks = []
+        for following in paragraphs[index + 1:]:
+            if following.text.strip():
+                break
+            blanks.append(following)
+        for blank in blanks[1:]:
+            _remove_docx_element(blank._element)
+        break
+
+    # Verse is restored during PDF polish so LibreOffice page-2 spill is not required.
+    for paragraph in list(document.paragraphs):
+        text = paragraph.text.strip()
+        if text.startswith('The point is this') or '2 Corinthians 9:6-8' in text:
+            _remove_docx_element(paragraph._element)
+    while document.paragraphs and not document.paragraphs[-1].text.strip():
+        _remove_docx_element(document.paragraphs[-1]._element)
+
     document.save(str(docx_path))
 
 def render_giving_letter_docx(person, year_label, amount_text):
@@ -1126,8 +1185,27 @@ def draw_letter_header(pdf, page_w, page_h):
         )
     return draw_h
 
+def draw_giving_letter_verse(pdf, page_w, page_h):
+    """Draw the full 2 Corinthians footer verse on page 1."""
+    left, right = 54, page_w - 54
+    width = right - left
+    font, size, leading = 'Times-Italic', 9, 11
+    lines = simpleSplit(GIVING_LETTER_VERSE, font, size, width) or [GIVING_LETTER_VERSE]
+    verse_top = 28 + len(lines) * leading
+    # Cover LibreOffice header/footer fragments that land near the bottom.
+    pdf.setFillColor(colors.white)
+    pdf.rect(0, 0, page_w, verse_top + 16, fill=1, stroke=0)
+    y = verse_top
+    pdf.setFillColor(colors.black)
+    pdf.setFont(font, size)
+    for line in lines:
+        pdf.drawString(left, y, line)
+        y -= leading
+    pdf.setFont('Times-Roman', 9)
+    pdf.drawRightString(right, 18, GIVING_LETTER_VERSE_REF)
+
 def polish_giving_letter_pdf(pdf_path):
-    """Restore letterhead LibreOffice drops from the layered Word header."""
+    """Restore letterhead and scripture LibreOffice drops from the layered Word header."""
     pdf_path = Path(pdf_path)
     reader = PdfReader(str(pdf_path))
     if not reader.pages:
@@ -1140,11 +1218,13 @@ def polish_giving_letter_pdf(pdf_path):
     overlay = io.BytesIO()
     c = canvas.Canvas(overlay, pagesize=(page_w, page_h))
     draw_letter_header(c, page_w, page_h)
-    # LibreOffice often pushes the scripture citation onto a spill page; keep page 1 only.
-    if '2 Corinthians 9:6-8' not in first_page_text:
+    # Keep page 1 only; redraw the full verse when LibreOffice spilled it.
+    if 'The point is this' not in first_page_text:
+        draw_giving_letter_verse(c, page_w, page_h)
+    elif GIVING_LETTER_VERSE_REF not in first_page_text:
         c.setFillColor(colors.black)
-        c.setFont('Helvetica', 9)
-        c.drawRightString(page_w - 54, 36, '2 Corinthians 9:6-8')
+        c.setFont('Times-Roman', 9)
+        c.drawRightString(page_w - 54, 18, GIVING_LETTER_VERSE_REF)
     c.save()
     overlay.seek(0)
     page.merge_page(PdfReader(overlay).pages[0])

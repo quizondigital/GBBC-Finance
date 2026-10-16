@@ -115,6 +115,8 @@ def test_exports_and_role_matrix(client):
     assert 'January 31, 2027' in letter
     assert letter.index('January 31, 2027') < letter.index('Ada Member')
     assert '2 Corinthians 9:6-8' in letter
+    assert 'The point is this' in letter
+    assert 'God loves a cheerful giver' in letter
     assert 'Itemized contributions' in letter
     # Letterhead is stamped as artwork (logo, church name, tax ID, website, green banner).
     reader = PdfReader(io.BytesIO(pdf.data))
