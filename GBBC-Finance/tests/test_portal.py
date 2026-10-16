@@ -3,7 +3,7 @@ import io
 import pytest
 from pypdf import PdfReader
 from werkzeug.security import generate_password_hash
-from app import create_app, db, User, Person, Fund, FiscalYear, Gift, ensure_schema
+from app import create_app, db, User, Person, Fund, FiscalYear, Gift, SignupRequest, ensure_schema
 
 def _hash(password):
     return generate_password_hash(password, method='pbkdf2:sha256')
@@ -131,11 +131,118 @@ def test_login_limit(client):
 
 def test_all_primary_pages_render(client):
     login(client, 'sally@example.org')
-    paths = ['/', '/people', '/people/new', '/people/1/edit', '/people/import', '/contributions', '/contributions/import', '/contributions/new', '/reports', '/admin/users', '/admin/users/1/edit', '/admin/roles', '/admin/fiscal', '/admin/settings', '/admin/feedback', '/admin/audit', '/help']
+    paths = ['/', '/people', '/people/new', '/people/1/edit', '/people/import', '/contributions', '/contributions/import', '/contributions/new', '/reports', '/admin/users', '/admin/users/1/edit', '/admin/roles', '/admin/fiscal', '/admin/settings', '/admin/feedback', '/admin/audit', '/help', '/approvals']
     for path in paths:
         response = client.get(path)
         assert response.status_code == 200, path
         assert b'GBBC Finance' in response.data, path
+
+def test_signup_and_admin_approval_flow(client):
+    login_page = client.get('/login')
+    assert b'Sign Up' in login_page.data
+    assert b'href="/signup"' in login_page.data
+    signup_page = client.get('/signup')
+    assert signup_page.status_code == 200
+    assert b'Create an account' in signup_page.data
+    weak = client.post('/signup', data={
+        'csrf_token': token(client),
+        'first_name': 'Pat', 'last_name': 'Applicant', 'email': 'pat@example.org',
+        'password': 'short1!', 'confirm_password': 'short1!', 'role': 'People Viewer',
+    }, follow_redirects=True)
+    assert weak.status_code == 400
+    assert b'at least 8 characters' in weak.data
+    mismatch = client.post('/signup', data={
+        'csrf_token': token(client),
+        'first_name': 'Pat', 'last_name': 'Applicant', 'email': 'pat@example.org',
+        'password': 'Secure1!', 'confirm_password': 'Secure2!', 'role': 'Finance',
+    }, follow_redirects=True)
+    assert b'do not match' in mismatch.data
+    ok = client.post('/signup', data={
+        'csrf_token': token(client),
+        'first_name': 'Pat', 'last_name': 'Applicant', 'email': 'pat@example.org',
+        'password': 'Secure1!', 'confirm_password': 'Secure1!', 'role': 'People Viewer',
+    }, follow_redirects=True)
+    assert b'approved by an administrator' in ok.data
+    assert b'Admin\'s email address' in ok.data or b"Admin's email address" in ok.data
+    with client.application.app_context():
+        pending = db.session.scalar(db.select(SignupRequest).filter_by(email='pat@example.org'))
+        assert pending is not None and pending.status == 'pending'
+        assert db.session.scalar(db.select(User).filter_by(email='pat@example.org')) is None
+    blocked = client.post('/login', data={'csrf_token': token(client), 'email': 'pat@example.org', 'password': 'Secure1!'}, follow_redirects=True)
+    assert b'waiting for administrator approval' in blocked.data
+    login(client, 'sally@example.org')
+    approvals = client.get('/approvals')
+    assert approvals.status_code == 200
+    assert b'Pat Applicant' in approvals.data
+    assert b'Approvals' in client.get('/people').data
+    approved = client.post('/approvals', data={
+        'csrf_token': token(client), 'signup_id': '1', 'action': 'approve',
+    }, follow_redirects=True)
+    assert b'Approved Pat Applicant' in approved.data
+    client.post('/logout', data={'csrf_token': token(client)})
+    client.get('/login')
+    signed_in = client.post('/login', data={'csrf_token': token(client), 'email': 'pat@example.org', 'password': 'Secure1!'}, follow_redirects=True)
+    assert signed_in.status_code == 200
+    assert b'People' in signed_in.data
+    assert client.get('/').status_code == 403
+    assert client.get('/people').status_code == 200
+    assert client.get('/help').status_code == 200
+    assert client.get('/contributions').status_code == 403
+    assert client.get('/approvals').status_code == 403
+    assert b'Overview</span>' not in client.get('/people').data
+    assert b'Approvals</span>' not in client.get('/people').data
+
+def test_finance_signup_role_cannot_access_approvals(client):
+    client.get('/signup')
+    client.post('/signup', data={
+        'csrf_token': token(client),
+        'first_name': 'Fin', 'last_name': 'Staffish', 'email': 'fin@example.org',
+        'password': 'Secure1!', 'confirm_password': 'Secure1!', 'role': 'Finance',
+    })
+    login(client, 'sally@example.org')
+    with client.application.app_context():
+        req = db.session.scalar(db.select(SignupRequest).filter_by(email='fin@example.org'))
+        req_id = req.id
+    client.post('/approvals', data={'csrf_token': token(client), 'signup_id': str(req_id), 'action': 'approve'}, follow_redirects=True)
+    client.post('/logout', data={'csrf_token': token(client)})
+    client.get('/login')
+    login_resp = client.post('/login', data={'csrf_token': token(client), 'email': 'fin@example.org', 'password': 'Secure1!'}, follow_redirects=True)
+    assert b'Overview' in login_resp.data
+    assert client.get('/').status_code == 200
+    assert client.get('/people').status_code == 200
+    assert client.get('/contributions').status_code == 200
+    assert client.get('/help').status_code == 200
+    assert client.get('/approvals').status_code == 403
+    assert b'Approvals</span>' not in client.get('/').data
+
+def test_admin_signup_role_can_approve(client):
+    client.get('/signup')
+    client.post('/signup', data={
+        'csrf_token': token(client),
+        'first_name': 'Ada', 'last_name': 'Adminish', 'email': 'ada.admin@example.org',
+        'password': 'Secure1!', 'confirm_password': 'Secure1!', 'role': 'Admin',
+    })
+    client.get('/signup')
+    client.post('/signup', data={
+        'csrf_token': token(client),
+        'first_name': 'Vie', 'last_name': 'Wer', 'email': 'viewer2@example.org',
+        'password': 'Secure1!', 'confirm_password': 'Secure1!', 'role': 'People Viewer',
+    })
+    login(client, 'sally@example.org')
+    with client.application.app_context():
+        admin_req = db.session.scalar(db.select(SignupRequest).filter_by(email='ada.admin@example.org'))
+        viewer_req = db.session.scalar(db.select(SignupRequest).filter_by(email='viewer2@example.org'))
+        admin_id, viewer_id = admin_req.id, viewer_req.id
+    client.post('/approvals', data={'csrf_token': token(client), 'signup_id': str(admin_id), 'action': 'approve'}, follow_redirects=True)
+    client.post('/logout', data={'csrf_token': token(client)})
+    client.get('/login')
+    client.post('/login', data={'csrf_token': token(client), 'email': 'ada.admin@example.org', 'password': 'Secure1!'}, follow_redirects=True)
+    assert client.get('/approvals').status_code == 200
+    denied = client.post('/approvals', data={'csrf_token': token(client), 'signup_id': str(viewer_id), 'action': 'deny'}, follow_redirects=True)
+    assert b'Denied Vie Wer' in denied.data
+    with client.application.app_context():
+        assert db.session.scalar(db.select(SignupRequest).filter_by(email='viewer2@example.org')).status == 'denied'
+        assert db.session.scalar(db.select(User).filter_by(email='viewer2@example.org')) is None
 
 def test_contribution_csv_import(client):
     login(client, 'sally@example.org')

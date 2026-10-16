@@ -15,3 +15,9 @@ details p{margin:10px 0}details pre{overflow:auto;background:#f3f6f3;border:1px 
 .change-to{font-weight:700;color:#16533f}
 .button.danger-solid{background:#a93838;border-color:#a93838;color:#fff}
 .button.danger-solid:hover{background:#8f2d2d}
+
+.auth-switch{margin-top:18px;font-size:14px;color:#66746a;text-align:center}
+.auth-switch a{font-weight:700}
+.signup-card{width:min(100%,520px)}
+.role-notes{margin:0;padding-left:18px;color:#66746a;font-size:13px;line-height:1.45;display:grid;gap:4px}
+.approval-actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center}

@@ -1,0 +1,51 @@
+{% extends 'base.html' %}
+{% block title %}Sign up | GBBC Finance{% endblock %}
+{% block public %}
+<div class="login-wrap">
+  <section class="login-card signup-card">
+    <img src="{{ url_for('static', filename='gbbc-logo.webp') }}" alt="Green Brook Baptist Church logo" class="login-logo">
+    <p class="eyebrow">Green Brook Baptist Church</p>
+    <h1>Create an account</h1>
+    <p class="muted">Submit a signup request. An administrator must approve it before you can sign in.</p>
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% for category, message in messages %}
+        <div class="flash {{ category }}" role="alert">{{ message }}</div>
+      {% endfor %}
+    {% endwith %}
+    <form method="post" class="form-stack" novalidate>
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label>First name <em>required, max 32</em>
+        <input name="first_name" maxlength="32" value="{{ form.first_name }}" required autocomplete="given-name">
+      </label>
+      <label>Last name <em>required, max 32</em>
+        <input name="last_name" maxlength="32" value="{{ form.last_name }}" required autocomplete="family-name">
+      </label>
+      <label>Email <em>required — this is your user ID</em>
+        <input name="email" type="email" value="{{ form.email }}" required autocomplete="email">
+      </label>
+      <label>Password <em>required</em>
+        <input name="password" type="password" minlength="8" required autocomplete="new-password">
+      </label>
+      <p class="field-hint">At least 8 characters, with 1 capital letter, 1 lowercase letter, 1 number, and 1 special character.</p>
+      <label>Confirm password <em>required</em>
+        <input name="confirm_password" type="password" minlength="8" required autocomplete="new-password">
+      </label>
+      <label>Role <em>required</em>
+        <select name="role" required>
+          <option value="">Select a role</option>
+          {% for role in signup_roles %}
+          <option value="{{ role }}" {% if form.role == role %}selected{% endif %}>{{ role }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <ul class="role-notes">
+        <li><strong>People Viewer</strong> — People and Help only</li>
+        <li><strong>Finance</strong> or <strong>Admin</strong> — Overview, People, Contributions, and Help</li>
+        <li><strong>Admin</strong> — also reviews signup Approvals after their own account is approved</li>
+      </ul>
+      <button class="button" type="submit">Submit signup request</button>
+    </form>
+    <p class="auth-switch">Already have an account? <a href="{{ url_for('login') }}">Sign in</a></p>
+  </section>
+</div>
+{% endblock %}

@@ -1,0 +1,89 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="heading">
+  <div>
+    <p class="eyebrow">Administration</p>
+    <h1>Approvals</h1>
+    <p class="muted">Review signup requests. Approving creates the account; denying rejects it. The registrant is notified from your email address.</p>
+  </div>
+</div>
+
+<section class="card">
+  <div class="card-head">
+    <h2>Pending signup requests</h2>
+    <p>{{ pending|length }} waiting for a decision</p>
+  </div>
+  {% if pending %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Requested</th>
+          <th>Name</th>
+          <th>Email</th>
+          <th>Role</th>
+          <th>Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in pending %}
+        <tr>
+          <td>{{ item.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+          <td><strong>{{ item.name }}</strong></td>
+          <td>{{ item.email }}</td>
+          <td><span class="pill">{{ item.requested_role }}</span></td>
+          <td class="approval-actions">
+            <form method="post" class="inline">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <input type="hidden" name="signup_id" value="{{ item.id }}">
+              <button class="button" type="submit" name="action" value="approve">Approve</button>
+            </form>
+            <form method="post" class="inline">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <input type="hidden" name="signup_id" value="{{ item.id }}">
+              <button class="button secondary" type="submit" name="action" value="deny">Deny</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty">No pending signup requests.</p>
+  {% endif %}
+</section>
+
+{% if recent %}
+<section class="card" style="margin-top:20px">
+  <div class="card-head">
+    <h2>Recently reviewed</h2>
+    <p>Latest approval and denial decisions</p>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Reviewed</th>
+          <th>Name</th>
+          <th>Email</th>
+          <th>Role</th>
+          <th>Decision</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in recent %}
+        <tr>
+          <td>{{ item.reviewed_at.strftime('%Y-%m-%d %H:%M') if item.reviewed_at else '—' }}</td>
+          <td>{{ item.name }}</td>
+          <td>{{ item.email }}</td>
+          <td>{{ item.requested_role }}</td>
+          <td><span class="pill">{{ item.status|capitalize }}</span></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+{% endblock %}

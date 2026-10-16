@@ -24,7 +24,8 @@ from reportlab.lib.utils import ImageReader, simpleSplit
 from reportlab.pdfgen import canvas
 from werkzeug.security import check_password_hash, generate_password_hash
 
-ROLES = ('Super Admin', 'System Administrator', 'Finance Staff', 'Church Leader')
+ROLES = ('Super Admin', 'System Administrator', 'Finance Staff', 'Church Leader', 'Admin', 'Finance', 'People Viewer')
+SIGNUP_ROLES = ('Admin', 'Finance', 'People Viewer')
 US_STATES = (
     ('AL', 'Alabama'), ('AK', 'Alaska'), ('AZ', 'Arizona'), ('AR', 'Arkansas'), ('CA', 'California'),
     ('CO', 'Colorado'), ('CT', 'Connecticut'), ('DE', 'Delaware'), ('DC', 'District of Columbia'),
@@ -45,16 +46,20 @@ FUND_ALIASES = {
     'Benevolence': 'Benevolence Fund',
 }
 PERMISSIONS = {
-    'Super Admin': {'overview', 'people_view', 'people_write', 'gift_view', 'gift_write', 'reports', 'detail_reports', 'statements', 'users', 'roles', 'fiscal', 'feedback', 'settings', 'feedback_review', 'audit_view'},
-    'System Administrator': {'overview', 'people_view', 'reports', 'users', 'roles', 'fiscal', 'feedback', 'settings', 'feedback_review', 'audit_view'},
-    'Finance Staff': {'overview', 'people_view', 'people_write', 'gift_view', 'gift_write', 'reports', 'detail_reports', 'statements', 'feedback'},
-    'Church Leader': {'overview', 'people_view', 'reports', 'feedback'},
+    'Super Admin': {'overview', 'people_view', 'people_write', 'gift_view', 'gift_write', 'reports', 'detail_reports', 'statements', 'users', 'roles', 'fiscal', 'feedback', 'settings', 'feedback_review', 'audit_view', 'utilities', 'approvals'},
+    'System Administrator': {'overview', 'people_view', 'reports', 'users', 'roles', 'fiscal', 'feedback', 'settings', 'feedback_review', 'audit_view', 'utilities'},
+    'Finance Staff': {'overview', 'people_view', 'people_write', 'gift_view', 'gift_write', 'reports', 'detail_reports', 'statements', 'feedback', 'utilities'},
+    'Church Leader': {'overview', 'people_view', 'reports', 'feedback', 'utilities'},
+    'Admin': {'overview', 'people_view', 'people_write', 'gift_view', 'gift_write', 'approvals'},
+    'Finance': {'overview', 'people_view', 'people_write', 'gift_view', 'gift_write'},
+    'People Viewer': {'people_view'},
 }
 PAGE_MATRIX = [
     ('Dashboard', 'overview'), ('People directory', 'people_view'), ('Create and edit people', 'people_write'),
     ('Contribution detail', 'gift_view'), ('Record and correct gifts', 'gift_write'), ('Aggregate giving reports', 'reports'),
     ('Individual giving reports', 'detail_reports'), ('Giving statements', 'statements'),
-    ('Utilities', 'people_view'),
+    ('Utilities', 'utilities'),
+    ('Signup approvals', 'approvals'),
     ('User administration', 'users'), ('Role permissions', 'roles'), ('Fiscal-year administration', 'fiscal'),
     ('Feedback', 'feedback'), ('Website settings', 'settings'),
     ('Review submitted feedback', 'feedback_review'), ('Audit history', 'audit_view'),
@@ -154,12 +159,101 @@ class LoginAttempt(db.Model):
     email = db.Column(db.String(255), nullable=False, index=True)
     attempted_at = db.Column(db.DateTime, default=lambda: utcnow(), nullable=False)
 
+class SignupRequest(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    first_name = db.Column(db.String(32), nullable=False)
+    last_name = db.Column(db.String(32), nullable=False)
+    email = db.Column(db.String(255), nullable=False, index=True)
+    password_hash = db.Column(db.String(255), nullable=False)
+    requested_role = db.Column(db.String(40), nullable=False)
+    status = db.Column(db.String(20), default='pending', nullable=False, index=True)
+    created_at = db.Column(db.DateTime, default=lambda: utcnow(), nullable=False)
+    reviewed_at = db.Column(db.DateTime)
+    reviewed_by_id = db.Column(db.Integer, db.ForeignKey('user.id'))
+    reviewed_by = db.relationship('User')
+    decision_note = db.Column(db.String(255), default='')
+    @property
+    def name(self):
+        return f'{self.first_name} {self.last_name}'
+
 def utcnow():
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 def hash_password(password):
     method = 'scrypt' if hasattr(hashlib, 'scrypt') else 'pbkdf2:sha256'
     return generate_password_hash(password, method=method)
+
+def validate_signup_password(password):
+    if len(password) < 8:
+        raise ValueError('Password must be at least 8 characters.')
+    if not re.search(r'[A-Z]', password):
+        raise ValueError('Password must include at least one capital letter.')
+    if not re.search(r'[a-z]', password):
+        raise ValueError('Password must include at least one lowercase letter.')
+    if not re.search(r'[0-9]', password):
+        raise ValueError('Password must include at least one number.')
+    if not re.search(r'[^A-Za-z0-9]', password):
+        raise ValueError('Password must include at least one special character.')
+
+def default_home_path(user):
+    perms = PERMISSIONS.get(user.role, set())
+    if 'overview' in perms:
+        return '/'
+    if 'people_view' in perms:
+        return '/people'
+    return '/help'
+
+def notify_signup_decision(signup, approved, reviewer):
+    """Send approval/decline notice from the reviewing admin's email (or local outbox fallback)."""
+    decision = 'approved' if approved else 'declined'
+    subject = f'GBBC Finance account request {decision}'
+    if approved:
+        body = (
+            f'Dear {signup.first_name},\n\n'
+            f'Your GBBC Finance portal account request has been approved by {reviewer.name}.\n'
+            f'Role: {signup.requested_role}\n'
+            f'Sign in with your email address: {signup.email}\n\n'
+            f'Green Brook Baptist Church\n'
+        )
+    else:
+        body = (
+            f'Dear {signup.first_name},\n\n'
+            f'Your GBBC Finance portal account request has been declined by {reviewer.name}.\n'
+            f'If you believe this was a mistake, contact your church administrator.\n\n'
+            f'Green Brook Baptist Church\n'
+        )
+    from_addr = reviewer.email
+    to_addr = signup.email
+    message = (
+        f'From: {from_addr}\n'
+        f'To: {to_addr}\n'
+        f'Subject: {subject}\n'
+        f'\n{body}'
+    )
+    smtp_host = os.environ.get('SMTP_HOST', '').strip()
+    if smtp_host:
+        import smtplib
+        from email.message import EmailMessage
+        email_msg = EmailMessage()
+        email_msg['From'] = from_addr
+        email_msg['To'] = to_addr
+        email_msg['Subject'] = subject
+        email_msg.set_content(body)
+        port = int(os.environ.get('SMTP_PORT', '587'))
+        with smtplib.SMTP(smtp_host, port, timeout=20) as smtp:
+            if os.environ.get('SMTP_STARTTLS', '1') == '1':
+                smtp.starttls()
+            username = os.environ.get('SMTP_USERNAME', '')
+            password = os.environ.get('SMTP_PASSWORD', '')
+            if username:
+                smtp.login(username, password)
+            smtp.send_message(email_msg)
+        return 'sent'
+    outbox = Path(current_app.instance_path) / 'mail_outbox'
+    outbox.mkdir(parents=True, exist_ok=True)
+    stamp = utcnow().strftime('%Y%m%d%H%M%S')
+    (outbox / f'signup_{signup.id}_{decision}_{stamp}.txt').write_text(message, encoding='utf-8')
+    return 'queued'
 
 def excel_safe(value):
     text = str(value)
@@ -234,6 +328,7 @@ def read_person_address(source):
 def ensure_schema():
     """Add columns introduced after the first release; migrate legacy person.address."""
     from sqlalchemy import inspect, text
+    db.create_all()
     inspector = inspect(db.engine)
     tables = set(inspector.get_table_names())
     if 'user' in tables:
@@ -984,7 +1079,7 @@ def create_app(test_config=None):
         response.headers['X-Content-Type-Options'] = 'nosniff'
         response.headers['X-Frame-Options'] = 'DENY'
         response.headers['Referrer-Policy'] = 'same-origin'
-        if request.path != '/login': response.headers['Cache-Control'] = 'no-store'
+        if request.path not in ('/login', '/signup'): response.headers['Cache-Control'] = 'no-store'
         return response
 
     @app.before_request
@@ -999,21 +1094,31 @@ def create_app(test_config=None):
 
     @app.context_processor
     def context():
-        def can(permission): return bool(g.user and permission in PERMISSIONS[g.user.role])
-        return {'current_user': g.user, 'can': can, 'csrf_token': lambda: session['csrf'], 'roles': ROLES, 'today': date.today(), 'us_states': US_STATES}
+        def can(permission): return bool(g.user and permission in PERMISSIONS.get(g.user.role, set()))
+        return {
+            'current_user': g.user,
+            'can': can,
+            'csrf_token': lambda: session['csrf'],
+            'roles': ROLES,
+            'signup_roles': SIGNUP_ROLES,
+            'today': date.today(),
+            'us_states': US_STATES,
+        }
 
     def require(permission):
         def deco(fn):
             @wraps(fn)
             def wrapper(*args, **kwargs):
                 if not g.user: return redirect(url_for('login', next=request.path))
-                if permission not in PERMISSIONS[g.user.role]: abort(403)
+                if permission not in PERMISSIONS.get(g.user.role, set()): abort(403)
                 return fn(*args, **kwargs)
             return wrapper
         return deco
 
     @app.route('/login', methods=['GET', 'POST'])
     def login():
+        if g.user:
+            return redirect(default_home_path(g.user))
         if request.method == 'POST':
             identifier = request.form.get('email', '').strip().lower()
             recent = db.session.scalar(db.select(db.func.count(LoginAttempt.id)).where(LoginAttempt.email == identifier, LoginAttempt.attempted_at >= utcnow() - timedelta(minutes=15)))
@@ -1024,11 +1129,75 @@ def create_app(test_config=None):
             if user and check_password_hash(user.password_hash, request.form.get('password', '')):
                 session.clear(); session['user_id'] = user.id; session['csrf'] = secrets.token_urlsafe(32)
                 user.last_login = utcnow(); g.user = user; audit('login', 'user', user.id); db.session.commit()
-                target = request.args.get('next', '/')
-                return redirect(target if target.startswith('/') and not target.startswith('//') else '/')
+                target = request.args.get('next') or default_home_path(user)
+                if not (target.startswith('/') and not target.startswith('//')):
+                    target = default_home_path(user)
+                if target == '/' and 'overview' not in PERMISSIONS.get(user.role, set()):
+                    target = default_home_path(user)
+                return redirect(target)
+            pending = db.session.scalar(
+                db.select(SignupRequest).where(SignupRequest.email == identifier, SignupRequest.status == 'pending')
+            )
             db.session.add(LoginAttempt(email=identifier)); audit('failed_login', 'user', user.id if user else None); db.session.commit()
-            flash('Invalid email or password.', 'error')
+            if pending:
+                flash('Your account request is still waiting for administrator approval.', 'error')
+            else:
+                flash('Invalid email or password.', 'error')
         return render_template('login.html')
+
+    @app.route('/signup', methods=['GET', 'POST'])
+    def signup():
+        if g.user:
+            return redirect(default_home_path(g.user))
+        form = {
+            'first_name': '',
+            'last_name': '',
+            'email': '',
+            'role': '',
+        }
+        if request.method == 'POST':
+            form['first_name'] = (request.form.get('first_name') or '').strip()
+            form['last_name'] = (request.form.get('last_name') or '').strip()
+            form['email'] = (request.form.get('email') or '').strip().lower()
+            form['role'] = (request.form.get('role') or '').strip()
+            password = request.form.get('password') or ''
+            confirm = request.form.get('confirm_password') or ''
+            try:
+                if not form['first_name'] or not form['last_name']:
+                    raise ValueError('First name and last name are required.')
+                if len(form['first_name']) > 32 or len(form['last_name']) > 32:
+                    raise ValueError('First name and last name are limited to 32 characters.')
+                if not valid_email(form['email']):
+                    raise ValueError('Enter a valid email address. This email is your user ID.')
+                if form['role'] not in SIGNUP_ROLES:
+                    raise ValueError('Choose a role: Admin, Finance, or People Viewer.')
+                validate_signup_password(password)
+                if password != confirm:
+                    raise ValueError('Password and confirmation do not match.')
+                if db.session.scalar(db.select(User).where(db.func.lower(User.email) == form['email'])):
+                    raise ValueError('An account with that email already exists. Sign in instead.')
+                existing_pending = db.session.scalar(
+                    db.select(SignupRequest).where(SignupRequest.email == form['email'], SignupRequest.status == 'pending')
+                )
+                if existing_pending:
+                    raise ValueError('A signup request for that email is already waiting for approval.')
+            except ValueError as exc:
+                flash(str(exc), 'error')
+                return render_template('signup.html', form=form), 400
+            signup_req = SignupRequest(
+                first_name=form['first_name'][:32],
+                last_name=form['last_name'][:32],
+                email=form['email'],
+                password_hash=hash_password(password),
+                requested_role=form['role'],
+                status='pending',
+            )
+            db.session.add(signup_req)
+            db.session.flush()
+            audit('signup_request', 'signup', signup_req.id, summary=form['role'])
+            db.session.commit()
+            return render_template('signup_pending.html', email=form['email'])
+        return render_template('signup.html', form=form)
 
     @app.post('/logout')
     def logout():
@@ -1638,12 +1807,12 @@ def create_app(test_config=None):
         return render_template('fiscal.html', years=years)
 
     @app.route('/utilities')
-    @require('people_view')
+    @require('utilities')
     def utilities():
         return render_template('utilities.html')
 
     @app.route('/utilities/boa-people', methods=['GET', 'POST'])
-    @require('people_view')
+    @require('utilities')
     def utilities_boa_people():
         if request.method == 'POST':
             file = request.files.get('file')
@@ -1671,7 +1840,7 @@ def create_app(test_config=None):
         return render_template('utilities_boa_people.html')
 
     @app.route('/utilities/boa-giving', methods=['GET', 'POST'])
-    @require('people_view')
+    @require('utilities')
     def utilities_boa_giving():
         if request.method == 'POST':
             file = request.files.get('file')
@@ -1702,8 +1871,9 @@ def create_app(test_config=None):
         return render_template('utilities_boa_giving.html')
 
     @app.route('/help', methods=['GET', 'POST'])
-    @require('feedback')
     def help_page():
+        if not g.user:
+            return redirect(url_for('login', next=request.path))
         if request.method == 'POST':
             subject = request.form.get('subject', '').strip(); message = request.form.get('message', '').strip()
             if not subject or not message: flash('Subject and description are required.', 'error')
@@ -1712,6 +1882,70 @@ def create_app(test_config=None):
                 db.session.add(feedback); db.session.flush(); audit('create', 'feedback', feedback.id); db.session.commit()
                 flash('Feedback sent.', 'success'); return redirect(url_for('help_page'))
         return render_template('help.html')
+
+    @app.route('/approvals', methods=['GET', 'POST'])
+    @require('approvals')
+    def approvals():
+        if request.method == 'POST':
+            signup_id = request.form.get('signup_id', type=int)
+            action = (request.form.get('action') or '').strip()
+            signup_req = db.get_or_404(SignupRequest, signup_id)
+            if signup_req.status != 'pending':
+                flash('That signup request was already reviewed.', 'error')
+                return redirect(url_for('approvals'))
+            if action not in ('approve', 'deny'):
+                abort(400)
+            if action == 'approve':
+                if signup_req.requested_role not in SIGNUP_ROLES:
+                    flash('This request has an invalid role and cannot be approved.', 'error')
+                    return redirect(url_for('approvals'))
+                if db.session.scalar(db.select(User).where(db.func.lower(User.email) == signup_req.email.lower())):
+                    flash('A user with that email already exists. Deny this request or resolve the conflict.', 'error')
+                    return redirect(url_for('approvals'))
+                user = User(
+                    first_name=signup_req.first_name,
+                    last_name=signup_req.last_name,
+                    email=signup_req.email.lower(),
+                    phone='',
+                    role=signup_req.requested_role,
+                    password_hash=signup_req.password_hash,
+                    active=True,
+                )
+                db.session.add(user)
+                db.session.flush()
+                signup_req.status = 'approved'
+                signup_req.reviewed_at = utcnow()
+                signup_req.reviewed_by_id = g.user.id
+                audit('approve', 'signup', signup_req.id, summary=f'{signup_req.email} as {signup_req.requested_role}')
+                db.session.commit()
+                try:
+                    notify_signup_decision(signup_req, approved=True, reviewer=g.user)
+                except Exception:
+                    current_app.logger.exception('Failed to notify signup approval')
+                    flash('Account approved, but the notification email could not be sent.', 'error')
+                    return redirect(url_for('approvals'))
+                flash(f'Approved {signup_req.name}. A notice was sent from your email address.', 'success')
+            else:
+                signup_req.status = 'denied'
+                signup_req.reviewed_at = utcnow()
+                signup_req.reviewed_by_id = g.user.id
+                audit('deny', 'signup', signup_req.id, summary=signup_req.email)
+                db.session.commit()
+                try:
+                    notify_signup_decision(signup_req, approved=False, reviewer=g.user)
+                except Exception:
+                    current_app.logger.exception('Failed to notify signup denial')
+                    flash('Request denied, but the notification email could not be sent.', 'error')
+                    return redirect(url_for('approvals'))
+                flash(f'Denied {signup_req.name}. A notice was sent from your email address.', 'success')
+            return redirect(url_for('approvals'))
+        pending = db.session.scalars(
+            db.select(SignupRequest).where(SignupRequest.status == 'pending').order_by(SignupRequest.created_at.asc())
+        ).all()
+        recent = db.session.scalars(
+            db.select(SignupRequest).where(SignupRequest.status != 'pending').order_by(SignupRequest.reviewed_at.desc()).limit(25)
+        ).all()
+        return render_template('approvals.html', pending=pending, recent=recent)
 
     @app.route('/admin/feedback', methods=['GET', 'POST'])
     @require('feedback_review')
