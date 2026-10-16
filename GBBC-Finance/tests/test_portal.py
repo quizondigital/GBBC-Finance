@@ -1,6 +1,7 @@
 from datetime import date
 from pathlib import Path
 import io
+import re
 import pytest
 from pypdf import PdfReader
 from werkzeug.security import generate_password_hash
@@ -112,6 +113,7 @@ def test_exports_and_role_matrix(client):
     assert 'Romella Seepaul' in letter
     assert 'Dear Ada' in letter
     assert 'January 31, 2027' in letter
+    assert letter.index('January 31, 2027') < letter.index('Ada Member')
     assert '2 Corinthians 9:6-8' in letter
     assert 'Itemized contributions' in letter
     # Letterhead is stamped as artwork (logo, church name, tax ID, website, green banner).

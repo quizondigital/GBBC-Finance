@@ -1044,9 +1044,15 @@ def enhance_giving_letter_docx(docx_path, person_name, amount_text, letter_date)
     for paragraph in document.paragraphs:
         text = paragraph.text.strip()
         if not inserted_date and text == person_name:
+            from docx.shared import Pt
             date_paragraph = paragraph.insert_paragraph_before(letter_date)
             for run in date_paragraph.runs:
                 run.bold = False
+            # Keep a blank line between the letter date and the recipient name.
+            date_paragraph.paragraph_format.space_after = Pt(14)
+            spacer = paragraph.insert_paragraph_before(' ')
+            spacer.paragraph_format.space_before = Pt(0)
+            spacer.paragraph_format.space_after = Pt(0)
             inserted_date = True
         if text.startswith('Dear ') and person_name in text:
             for run in paragraph.runs:
