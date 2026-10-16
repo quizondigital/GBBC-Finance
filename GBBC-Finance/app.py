@@ -1021,6 +1021,15 @@ def statement_letter_date(year_label):
     year = int(digits.group(1)) if digits else date.today().year
     return f'January 31, {year + 1}'
 
+def _copy_run_font(source_run, target_run):
+    """Keep rebuilt body runs at the same face/size as neighboring template text."""
+    if source_run is None or target_run is None:
+        return
+    if source_run.font.name:
+        target_run.font.name = source_run.font.name
+    if source_run.font.size:
+        target_run.font.size = source_run.font.size
+
 def _bold_amount_in_paragraph(paragraph, amount_text):
     display = amount_text if str(amount_text).startswith('$') else f'${amount_text}'
     full = paragraph.text
@@ -1034,15 +1043,20 @@ def _bold_amount_in_paragraph(paragraph, amount_text):
     before, after = full.split(match, 1)
     if match != display and before.endswith('$'):
         before = before[:-1]
+    sample = next((run for run in paragraph.runs if run.font.size or run.font.name), None)
     for run in paragraph.runs:
         run.text = ''
     if not paragraph.runs:
         paragraph.add_run('')
     paragraph.runs[0].text = before
     paragraph.runs[0].bold = False
+    _copy_run_font(sample, paragraph.runs[0])
     amount_run = paragraph.add_run(display)
     amount_run.bold = True
-    paragraph.add_run(after).bold = False
+    _copy_run_font(sample, amount_run)
+    after_run = paragraph.add_run(after)
+    after_run.bold = False
+    _copy_run_font(sample, after_run)
 
 def _clear_docx_paragraph(paragraph):
     for run in paragraph.runs:
