@@ -1,4 +1,5 @@
 from datetime import date
+from pathlib import Path
 import io
 import pytest
 from pypdf import PdfReader
@@ -157,6 +158,9 @@ def test_signup_and_admin_approval_flow(client):
         'password': 'Secure1!', 'confirm_password': 'Secure2!', 'role': 'Finance',
     }, follow_redirects=True)
     assert b'do not match' in mismatch.data
+    signup_page = client.get('/signup')
+    assert b'password-toggle' in signup_page.data
+    assert b'Show' in signup_page.data
     ok = client.post('/signup', data={
         'csrf_token': token(client),
         'first_name': 'Pat', 'last_name': 'Applicant', 'email': 'pat@example.org',
@@ -168,6 +172,10 @@ def test_signup_and_admin_approval_flow(client):
         pending = db.session.scalar(db.select(SignupRequest).filter_by(email='pat@example.org'))
         assert pending is not None and pending.status == 'pending'
         assert db.session.scalar(db.select(User).filter_by(email='pat@example.org')) is None
+        outbox = Path(client.application.instance_path) / 'mail_outbox'
+        received = list(outbox.glob(f'signup_{pending.id}_received_*.txt'))
+        assert received, 'expected immediate signup acknowledgment email in mail_outbox'
+        assert 'signup request received' in received[0].read_text(encoding='utf-8').lower()
     blocked = client.post('/login', data={'csrf_token': token(client), 'email': 'pat@example.org', 'password': 'Secure1!'}, follow_redirects=True)
     assert b'waiting for administrator approval' in blocked.data
     login(client, 'sally@example.org')
@@ -211,9 +219,12 @@ def test_finance_signup_role_cannot_access_approvals(client):
     assert client.get('/').status_code == 200
     assert client.get('/people').status_code == 200
     assert client.get('/contributions').status_code == 200
+    assert client.get('/reports').status_code == 200
     assert client.get('/help').status_code == 200
     assert client.get('/approvals').status_code == 403
-    assert b'Approvals</span>' not in client.get('/').data
+    home = client.get('/').data
+    assert b'Reports</span>' in home
+    assert b'Approvals</span>' not in home
 
 def test_admin_signup_role_can_approve(client):
     client.get('/signup')

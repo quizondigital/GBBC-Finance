@@ -50,8 +50,8 @@ PERMISSIONS = {
     'System Administrator': {'overview', 'people_view', 'reports', 'users', 'roles', 'fiscal', 'feedback', 'settings', 'feedback_review', 'audit_view', 'utilities'},
     'Finance Staff': {'overview', 'people_view', 'people_write', 'gift_view', 'gift_write', 'reports', 'detail_reports', 'statements', 'feedback', 'utilities'},
     'Church Leader': {'overview', 'people_view', 'reports', 'feedback', 'utilities'},
-    'Admin': {'overview', 'people_view', 'people_write', 'gift_view', 'gift_write', 'approvals'},
-    'Finance': {'overview', 'people_view', 'people_write', 'gift_view', 'gift_write'},
+    'Admin': {'overview', 'people_view', 'people_write', 'gift_view', 'gift_write', 'reports', 'approvals'},
+    'Finance': {'overview', 'people_view', 'people_write', 'gift_view', 'gift_write', 'reports'},
     'People Viewer': {'people_view'},
 }
 PAGE_MATRIX = [
@@ -203,33 +203,13 @@ def default_home_path(user):
         return '/people'
     return '/help'
 
-def notify_signup_decision(signup, approved, reviewer):
-    """Send approval/decline notice from the reviewing admin's email (or local outbox fallback)."""
-    decision = 'approved' if approved else 'declined'
-    subject = f'GBBC Finance account request {decision}'
-    if approved:
-        body = (
-            f'Dear {signup.first_name},\n\n'
-            f'Your GBBC Finance portal account request has been approved by {reviewer.name}.\n'
-            f'Role: {signup.requested_role}\n'
-            f'Sign in with your email address: {signup.email}\n\n'
-            f'Green Brook Baptist Church\n'
-        )
-    else:
-        body = (
-            f'Dear {signup.first_name},\n\n'
-            f'Your GBBC Finance portal account request has been declined by {reviewer.name}.\n'
-            f'If you believe this was a mistake, contact your church administrator.\n\n'
-            f'Green Brook Baptist Church\n'
-        )
-    from_addr = reviewer.email
-    to_addr = signup.email
-    message = (
-        f'From: {from_addr}\n'
-        f'To: {to_addr}\n'
-        f'Subject: {subject}\n'
-        f'\n{body}'
-    )
+def portal_from_address():
+    return os.environ.get('MAIL_FROM', '').strip() or 'noreply@greenbrookchurch.org'
+
+def send_portal_email(to_addr, subject, body, from_addr=None, outbox_name='mail'):
+    """Send email via SMTP when configured; otherwise write to instance/mail_outbox."""
+    from_addr = (from_addr or portal_from_address()).strip()
+    message = f'From: {from_addr}\nTo: {to_addr}\nSubject: {subject}\n\n{body}'
     smtp_host = os.environ.get('SMTP_HOST', '').strip()
     if smtp_host:
         import smtplib
@@ -252,8 +232,54 @@ def notify_signup_decision(signup, approved, reviewer):
     outbox = Path(current_app.instance_path) / 'mail_outbox'
     outbox.mkdir(parents=True, exist_ok=True)
     stamp = utcnow().strftime('%Y%m%d%H%M%S')
-    (outbox / f'signup_{signup.id}_{decision}_{stamp}.txt').write_text(message, encoding='utf-8')
+    safe_name = re.sub(r'[^A-Za-z0-9_.-]+', '_', outbox_name)[:80]
+    (outbox / f'{safe_name}_{stamp}.txt').write_text(message, encoding='utf-8')
     return 'queued'
+
+def notify_signup_received(signup):
+    """Acknowledge that a signup request was received and is awaiting approval."""
+    subject = 'GBBC Finance signup request received'
+    body = (
+        f'Dear {signup.first_name},\n\n'
+        f'We received your GBBC Finance portal signup request for the role '
+        f'"{signup.requested_role}".\n\n'
+        f'An administrator must approve your request before you can sign in. '
+        f'You will receive another email with the approval or decline decision.\n\n'
+        f'Green Brook Baptist Church\n'
+    )
+    return send_portal_email(
+        signup.email,
+        subject,
+        body,
+        outbox_name=f'signup_{signup.id}_received',
+    )
+
+def notify_signup_decision(signup, approved, reviewer):
+    """Send approval/decline notice from the reviewing admin's email (or local outbox fallback)."""
+    decision = 'approved' if approved else 'declined'
+    subject = f'GBBC Finance account request {decision}'
+    if approved:
+        body = (
+            f'Dear {signup.first_name},\n\n'
+            f'Your GBBC Finance portal account request has been approved by {reviewer.name}.\n'
+            f'Role: {signup.requested_role}\n'
+            f'Sign in with your email address: {signup.email}\n\n'
+            f'Green Brook Baptist Church\n'
+        )
+    else:
+        body = (
+            f'Dear {signup.first_name},\n\n'
+            f'Your GBBC Finance portal account request has been declined by {reviewer.name}.\n'
+            f'If you believe this was a mistake, contact your church administrator.\n\n'
+            f'Green Brook Baptist Church\n'
+        )
+    return send_portal_email(
+        signup.email,
+        subject,
+        body,
+        from_addr=reviewer.email,
+        outbox_name=f'signup_{signup.id}_{decision}',
+    )
 
 def excel_safe(value):
     text = str(value)
@@ -1196,6 +1222,10 @@ def create_app(test_config=None):
             db.session.flush()
             audit('signup_request', 'signup', signup_req.id, summary=form['role'])
             db.session.commit()
+            try:
+                notify_signup_received(signup_req)
+            except Exception:
+                current_app.logger.exception('Failed to send signup received acknowledgment')
             return render_template('signup_pending.html', email=form['email'])
         return render_template('signup.html', form=form)
 

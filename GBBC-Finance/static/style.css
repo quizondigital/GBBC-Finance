@@ -21,3 +21,8 @@ details p{margin:10px 0}details pre{overflow:auto;background:#f3f6f3;border:1px 
 .signup-card{width:min(100%,520px)}
 .role-notes{margin:0;padding-left:18px;color:#66746a;font-size:13px;line-height:1.45;display:grid;gap:4px}
 .approval-actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+
+.password-field{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center}
+.password-toggle{min-height:42px;padding:0 12px;border:1px solid #d8dfd8;border-radius:9px;background:#f7faf7;color:#16533f;font-size:13px;font-weight:700}
+.password-toggle:hover{background:#eaf3ec}
+.password-toggle[aria-pressed="true"]{background:#e1f0e7;border-color:#b7d2c0}
