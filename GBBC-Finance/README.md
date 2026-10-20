@@ -16,6 +16,22 @@ export SECRET_KEY="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
 
 Local development defaults to SQLite in `instance/gbbc_portal.db`. No sample financial or personal data is installed.
 
+### Outbound email (signup confirmation and approvals)
+
+Without SMTP, signup messages are written to `instance/mail_outbox/` instead of an inbox. To send real email, either:
+
+1. Open **Administration → Website settings** and fill in SMTP host, port, username, password, from address, and encryption, then use **Send test email**, or
+2. Set environment variables (these override Website settings):
+
+```sh
+export MAIL_FROM='noreply@greenbrookchurch.org'
+export SMTP_HOST='smtp.dreamhost.com'   # or smtp.gmail.com
+export SMTP_PORT='587'
+export SMTP_USERNAME='your-mailbox@greenbrookchurch.org'
+export SMTP_PASSWORD='your-smtp-password'
+export SMTP_ENCRYPTION='starttls'       # starttls | ssl | none
+```
+
 Giving statements merge the Word letter in `letter_templates/giving_letter.docx`, convert with LibreOffice, then stamp `letter_templates/giving_letter_header.png` so the green letterhead (logo, church name, tax ID, website) survives export.
 
 ## MySQL / PythonAnywhere

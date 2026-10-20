@@ -45,3 +45,6 @@ details p{margin:10px 0}details pre{overflow:auto;background:#f3f6f3;border:1px 
 .pager-per-page{display:inline-flex;align-items:center;gap:8px}
 .pager-per-page-label{font-size:13px;font-weight:600;color:#2a2f2c;white-space:nowrap}
 .pager-per-page-select{min-height:34px;min-width:72px;border:1px solid #cfd6e0;border-radius:6px;background:#fff;padding:4px 28px 4px 10px;font-size:13px;color:#2a2f2c}
+.checkbox-row{display:flex;align-items:center;gap:8px;font-size:14px}
+.checkbox-row input{width:auto}
+button:disabled{opacity:.55;cursor:not-allowed}

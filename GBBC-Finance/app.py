@@ -203,38 +203,90 @@ def default_home_path(user):
         return '/people'
     return '/help'
 
-def portal_from_address():
-    return os.environ.get('MAIL_FROM', '').strip() or 'noreply@greenbrookchurch.org'
+MAIL_SETTING_KEYS = (
+    'mail_from', 'smtp_host', 'smtp_port', 'smtp_username', 'smtp_password', 'smtp_encryption',
+)
 
-def send_portal_email(to_addr, subject, body, from_addr=None, outbox_name='mail'):
-    """Send email via SMTP when configured; otherwise write to instance/mail_outbox."""
-    from_addr = (from_addr or portal_from_address()).strip()
-    message = f'From: {from_addr}\nTo: {to_addr}\nSubject: {subject}\n\n{body}'
-    smtp_host = os.environ.get('SMTP_HOST', '').strip()
-    if smtp_host:
-        import smtplib
-        from email.message import EmailMessage
-        email_msg = EmailMessage()
-        email_msg['From'] = from_addr
-        email_msg['To'] = to_addr
-        email_msg['Subject'] = subject
-        email_msg.set_content(body)
-        port = int(os.environ.get('SMTP_PORT', '587'))
-        with smtplib.SMTP(smtp_host, port, timeout=20) as smtp:
-            if os.environ.get('SMTP_STARTTLS', '1') == '1':
-                smtp.starttls()
-            username = os.environ.get('SMTP_USERNAME', '')
-            password = os.environ.get('SMTP_PASSWORD', '')
-            if username:
-                smtp.login(username, password)
-            smtp.send_message(email_msg)
-        return 'sent'
+def get_setting(key, default=''):
+    row = db.session.get(Setting, key)
+    return row.value if row and row.value is not None else default
+
+def set_setting(key, value):
+    row = db.session.get(Setting, key)
+    if row is None:
+        db.session.add(Setting(key=key, value=value))
+    else:
+        row.value = value
+
+def portal_mail_config():
+    """SMTP settings: environment variables override Website settings values."""
+    def env_or_setting(env_name, setting_key, default=''):
+        return os.environ.get(env_name, '').strip() or get_setting(setting_key, default).strip()
+
+    encryption = env_or_setting('SMTP_ENCRYPTION', 'smtp_encryption', '')
+    if not encryption:
+        if os.environ.get('SMTP_SSL', '').strip() == '1':
+            encryption = 'ssl'
+        elif os.environ.get('SMTP_STARTTLS', '1').strip() == '0':
+            encryption = 'none'
+        else:
+            encryption = 'starttls'
+    return {
+        'from_addr': env_or_setting('MAIL_FROM', 'mail_from', 'noreply@greenbrookchurch.org'),
+        'host': env_or_setting('SMTP_HOST', 'smtp_host'),
+        'port': int(env_or_setting('SMTP_PORT', 'smtp_port', '587') or '587'),
+        'username': env_or_setting('SMTP_USERNAME', 'smtp_username'),
+        'password': env_or_setting('SMTP_PASSWORD', 'smtp_password'),
+        'encryption': encryption.lower(),
+    }
+
+def portal_from_address():
+    return portal_mail_config()['from_addr'] or 'noreply@greenbrookchurch.org'
+
+def mail_is_configured():
+    return bool(portal_mail_config()['host'])
+
+def _write_mail_outbox(message, outbox_name):
     outbox = Path(current_app.instance_path) / 'mail_outbox'
     outbox.mkdir(parents=True, exist_ok=True)
     stamp = utcnow().strftime('%Y%m%d%H%M%S')
     safe_name = re.sub(r'[^A-Za-z0-9_.-]+', '_', outbox_name)[:80]
-    (outbox / f'{safe_name}_{stamp}.txt').write_text(message, encoding='utf-8')
-    return 'queued'
+    path = outbox / f'{safe_name}_{stamp}.txt'
+    path.write_text(message, encoding='utf-8')
+    return path
+
+def send_portal_email(to_addr, subject, body, from_addr=None, outbox_name='mail'):
+    """Send email via SMTP when configured; otherwise write to instance/mail_outbox."""
+    import smtplib
+    from email.message import EmailMessage
+
+    config = portal_mail_config()
+    from_addr = (from_addr or config['from_addr'] or 'noreply@greenbrookchurch.org').strip()
+    message = f'From: {from_addr}\nTo: {to_addr}\nSubject: {subject}\n\n{body}'
+    if not config['host']:
+        _write_mail_outbox(message, outbox_name)
+        return 'queued'
+
+    email_msg = EmailMessage()
+    email_msg['From'] = from_addr
+    email_msg['To'] = to_addr
+    email_msg['Subject'] = subject
+    email_msg.set_content(body)
+    try:
+        if config['encryption'] == 'ssl':
+            smtp = smtplib.SMTP_SSL(config['host'], config['port'], timeout=20)
+        else:
+            smtp = smtplib.SMTP(config['host'], config['port'], timeout=20)
+        with smtp:
+            if config['encryption'] == 'starttls':
+                smtp.starttls()
+            if config['username']:
+                smtp.login(config['username'], config['password'])
+            smtp.send_message(email_msg)
+        return 'sent'
+    except Exception:
+        _write_mail_outbox(message, f'{outbox_name}_failed')
+        raise
 
 def notify_signup_received(signup):
     """Acknowledge that a signup request was received and is awaiting approval."""
@@ -243,8 +295,9 @@ def notify_signup_received(signup):
         f'Dear {signup.first_name},\n\n'
         f'We received your GBBC Finance portal signup request for the role '
         f'"{signup.requested_role}".\n\n'
-        f'An administrator must approve your request before you can sign in. '
-        f'You will receive another email with the approval or decline decision.\n\n'
+        f'This email confirms we have your request. An administrator must approve '
+        f'it before you can sign in. You will receive another email with the '
+        f'approval or decline decision.\n\n'
         f'Green Brook Baptist Church\n'
     )
     return send_portal_email(
@@ -1458,11 +1511,21 @@ def create_app(test_config=None):
             db.session.flush()
             audit('signup_request', 'signup', signup_req.id, summary=form['role'])
             db.session.commit()
+            mail_status = 'queued'
+            mail_error = ''
             try:
-                notify_signup_received(signup_req)
-            except Exception:
+                mail_status = notify_signup_received(signup_req)
+            except Exception as exc:
                 current_app.logger.exception('Failed to send signup received acknowledgment')
-            return render_template('signup_pending.html', email=form['email'])
+                mail_status = 'failed'
+                mail_error = str(exc)
+            return render_template(
+                'signup_pending.html',
+                email=form['email'],
+                mail_status=mail_status,
+                mail_configured=mail_is_configured(),
+                mail_error=mail_error,
+            )
         return render_template('signup.html', form=form)
 
     @app.post('/logout')
@@ -2050,19 +2113,68 @@ def create_app(test_config=None):
     @require('settings')
     def settings_page():
         if request.method == 'POST':
-            for key in ('church_name', 'church_address'):
-                value = request.form.get(key, '').strip()
-                if not value:
-                    flash('Church name and mailing address are required.', 'error')
+            action = (request.form.get('action') or 'save').strip()
+            if action == 'test_email':
+                to_addr = (request.form.get('test_email_to') or g.user.email or '').strip().lower()
+                if not valid_email(to_addr):
+                    flash('Enter a valid address for the test email.', 'error')
                     return redirect(url_for('settings_page'))
-                setting = db.session.get(Setting, key)
-                if setting is None:
-                    setting = Setting(key=key, value=value); db.session.add(setting)
-                else: setting.value = value
-            audit('update', 'settings'); db.session.commit()
-            flash('Website settings saved.', 'success'); return redirect(url_for('settings_page'))
+                if not mail_is_configured():
+                    flash('Configure an SMTP host before sending a test email.', 'error')
+                    return redirect(url_for('settings_page'))
+                try:
+                    send_portal_email(
+                        to_addr,
+                        'GBBC Finance mail test',
+                        (
+                            f'This is a test message from the GBBC Finance portal.\n\n'
+                            f'Sent by {g.user.name} at {utcnow().isoformat(sep=" ", timespec="seconds")} UTC.\n'
+                        ),
+                        outbox_name='mail_test',
+                    )
+                    flash(f'Test email sent to {to_addr}.', 'success')
+                except Exception as exc:
+                    current_app.logger.exception('Mail test failed')
+                    flash(f'Test email failed: {exc}', 'error')
+                return redirect(url_for('settings_page'))
+
+            church_name = request.form.get('church_name', '').strip()
+            church_address = request.form.get('church_address', '').strip()
+            if not church_name or not church_address:
+                flash('Church name and mailing address are required.', 'error')
+                return redirect(url_for('settings_page'))
+            set_setting('church_name', church_name)
+            set_setting('church_address', church_address)
+
+            set_setting('mail_from', request.form.get('mail_from', '').strip())
+            set_setting('smtp_host', request.form.get('smtp_host', '').strip())
+            smtp_port = request.form.get('smtp_port', '').strip() or '587'
+            if not smtp_port.isdigit():
+                flash('SMTP port must be a number (for example 587 or 465).', 'error')
+                return redirect(url_for('settings_page'))
+            set_setting('smtp_port', smtp_port)
+            set_setting('smtp_username', request.form.get('smtp_username', '').strip())
+            encryption = (request.form.get('smtp_encryption') or 'starttls').strip().lower()
+            if encryption not in ('starttls', 'ssl', 'none'):
+                encryption = 'starttls'
+            set_setting('smtp_encryption', encryption)
+            new_password = request.form.get('smtp_password', '')
+            if new_password.strip():
+                set_setting('smtp_password', new_password)
+            elif request.form.get('clear_smtp_password') == '1':
+                set_setting('smtp_password', '')
+
+            audit('update', 'settings')
+            db.session.commit()
+            flash('Website settings saved.', 'success')
+            return redirect(url_for('settings_page'))
         values = {item.key: item.value for item in db.session.scalars(db.select(Setting)).all()}
-        return render_template('settings.html', values=values)
+        return render_template(
+            'settings.html',
+            values=values,
+            mail_configured=mail_is_configured(),
+            smtp_password_set=bool(values.get('smtp_password')),
+        )
 
     @app.route('/admin/fiscal', methods=['GET', 'POST'])
     @require('fiscal')

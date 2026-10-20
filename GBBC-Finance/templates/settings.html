@@ -1,1 +1,84 @@
-{% extends 'base.html' %}{% block content %}<div class="heading"><div><p class="eyebrow">Administration</p><h1>Website settings</h1><p class="muted">Church identity used on giving statements and deployment information.</p></div></div>{% include 'admin_nav.html' %}<div class="admin-grid"><section class="card form-card"><h2>Church identity</h2><form method="post" class="form-stack"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><label>Church name <em>required</em><input name="church_name" required value="{{ values.get('church_name', 'Green Brook Baptist Church') }}"></label><label>Mailing address <em>required</em><input name="church_address" required value="{{ values.get('church_address', '') }}" placeholder="170 Greenbrook Rd., Green Brook, NJ 08812"></label><button class="button" type="submit">Save settings</button></form></section><section class="card form-card"><h2>Deployment</h2><p>Planned domain: <strong>finance.greenbrookchurch.org</strong></p><p>Current connection: <strong>{{ 'HTTPS' if request.is_secure else 'HTTP' }}</strong></p><p class="muted">Configure a valid certificate and secure session cookies in the hosting environment before production use.</p></section></div>{% endblock %}
+{% extends 'base.html' %}
+{% block content %}
+<div class="heading">
+  <div>
+    <p class="eyebrow">Administration</p>
+    <h1>Website settings</h1>
+    <p class="muted">Church identity and outbound email used for signup confirmation and approval notices.</p>
+  </div>
+</div>
+{% include 'admin_nav.html' %}
+<div class="admin-grid">
+  <section class="card form-card">
+    <h2>Church identity</h2>
+    <form method="post" class="form-stack">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="action" value="save">
+      <label>Church name <em>required</em>
+        <input name="church_name" required value="{{ values.get('church_name', 'Green Brook Baptist Church') }}">
+      </label>
+      <label>Mailing address <em>required</em>
+        <input name="church_address" required value="{{ values.get('church_address', '') }}" placeholder="170 Greenbrook Rd., Green Brook, NJ 08812">
+      </label>
+
+      <h2 style="margin-top:18px">Outbound email (SMTP)</h2>
+      <p class="muted">
+        Signup confirmation and approval emails are sent only when an SMTP host is configured.
+        Environment variables <code>SMTP_*</code> / <code>MAIL_FROM</code> override these values when set.
+      </p>
+      <p class="muted">
+        Status:
+        {% if mail_configured %}
+        <strong>SMTP ready</strong>
+        {% else %}
+        <strong>Not configured</strong> — messages are saved under <code>instance/mail_outbox</code> until SMTP is set.
+        {% endif %}
+      </p>
+      <label>From address
+        <input name="mail_from" type="email" value="{{ values.get('mail_from', 'noreply@greenbrookchurch.org') }}" placeholder="noreply@greenbrookchurch.org">
+      </label>
+      <label>SMTP host
+        <input name="smtp_host" value="{{ values.get('smtp_host', '') }}" placeholder="smtp.dreamhost.com or smtp.gmail.com">
+      </label>
+      <label>SMTP port
+        <input name="smtp_port" value="{{ values.get('smtp_port', '587') }}" placeholder="587">
+      </label>
+      <label>Encryption
+        <select name="smtp_encryption">
+          {% set enc = values.get('smtp_encryption', 'starttls') %}
+          <option value="starttls" {% if enc == 'starttls' %}selected{% endif %}>STARTTLS (port 587)</option>
+          <option value="ssl" {% if enc == 'ssl' %}selected{% endif %}>SSL/TLS (port 465)</option>
+          <option value="none" {% if enc == 'none' %}selected{% endif %}>None</option>
+        </select>
+      </label>
+      <label>SMTP username
+        <input name="smtp_username" value="{{ values.get('smtp_username', '') }}" autocomplete="off">
+      </label>
+      <label>SMTP password
+        <input name="smtp_password" type="password" value="" autocomplete="new-password" placeholder="{{ 'Leave blank to keep saved password' if smtp_password_set else 'Enter SMTP password' }}">
+      </label>
+      {% if smtp_password_set %}
+      <label class="checkbox-row"><input type="checkbox" name="clear_smtp_password" value="1"> Clear saved SMTP password</label>
+      {% endif %}
+      <button class="button" type="submit">Save settings</button>
+    </form>
+  </section>
+
+  <section class="card form-card">
+    <h2>Send test email</h2>
+    <p class="muted">Uses the saved SMTP settings to confirm delivery before relying on signup mail.</p>
+    <form method="post" class="form-stack">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="action" value="test_email">
+      <label>Send test to
+        <input name="test_email_to" type="email" required value="{{ current_user.email }}">
+      </label>
+      <button class="button" type="submit" {% if not mail_configured %}disabled{% endif %}>Send test email</button>
+    </form>
+    <h2 style="margin-top:24px">Deployment</h2>
+    <p>Planned domain: <strong>finance.greenbrookchurch.org</strong></p>
+    <p>Current connection: <strong>{{ 'HTTPS' if request.is_secure else 'HTTP' }}</strong></p>
+    <p class="muted">Configure a valid certificate and secure session cookies in the hosting environment before production use.</p>
+  </section>
+</div>
+{% endblock %}

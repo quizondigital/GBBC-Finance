@@ -189,6 +189,7 @@ def test_signup_and_admin_approval_flow(client):
     }, follow_redirects=True)
     assert b'approved by an administrator' in ok.data
     assert b'Admin\'s email address' in ok.data or b"Admin's email address" in ok.data
+    assert b'Email delivery is not configured' in ok.data
     with client.application.app_context():
         pending = db.session.scalar(db.select(SignupRequest).filter_by(email='pat@example.org'))
         assert pending is not None and pending.status == 'pending'
@@ -287,6 +288,46 @@ def test_admin_signup_role_can_approve(client):
     with client.application.app_context():
         assert db.session.scalar(db.select(SignupRequest).filter_by(email='viewer2@example.org')).status == 'denied'
         assert db.session.scalar(db.select(User).filter_by(email='viewer2@example.org')) is None
+
+def test_signup_sends_email_when_smtp_configured(client, monkeypatch):
+    sent = []
+
+    class FakeSMTP:
+        def __init__(self, host, port, timeout=20):
+            self.host, self.port = host, port
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            return False
+        def starttls(self):
+            sent.append('starttls')
+        def login(self, username, password):
+            sent.append(('login', username, password))
+        def send_message(self, message):
+            sent.append(('send', message['To'], message['Subject'], message.get_content()))
+
+    monkeypatch.setattr('smtplib.SMTP', FakeSMTP)
+    with client.application.app_context():
+        from app import set_setting
+        set_setting('smtp_host', 'smtp.example.com')
+        set_setting('smtp_port', '587')
+        set_setting('smtp_username', 'mailer@example.com')
+        set_setting('smtp_password', 'secret-pass')
+        set_setting('smtp_encryption', 'starttls')
+        set_setting('mail_from', 'noreply@example.com')
+        db.session.commit()
+    client.get('/signup')
+    response = client.post('/signup', data={
+        'csrf_token': token(client),
+        'first_name': 'Mail', 'last_name': 'Tester', 'email': 'mail.tester@example.org',
+        'password': 'Secure1!', 'confirm_password': 'Secure1!', 'role': 'People Viewer',
+    }, follow_redirects=True)
+    assert response.status_code == 200
+    assert b'confirmation email was sent' in response.data
+    assert any(item[0] == 'send' for item in sent if isinstance(item, tuple))
+    send = next(item for item in sent if isinstance(item, tuple) and item[0] == 'send')
+    assert send[1] == 'mail.tester@example.org'
+    assert 'signup request received' in send[2].lower()
 
 def test_user_management_edit_and_delete_accounts(client):
     client.get('/signup')

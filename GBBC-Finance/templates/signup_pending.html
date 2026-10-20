@@ -10,6 +10,15 @@
       Account creation has to be approved by an administrator. The result (approval or decline) will be sent to
       <strong>{{ email }}</strong> from an Admin's email address.
     </div>
+    {% if mail_status == 'sent' %}
+    <p class="muted">A confirmation email was sent to <strong>{{ email }}</strong>.</p>
+    {% elif mail_status == 'failed' %}
+    <p class="flash error" role="status">We could not send the confirmation email right now{% if mail_error %}: {{ mail_error }}{% endif %}. Your signup request was still saved for administrator review.</p>
+    {% elif mail_configured %}
+    <p class="muted">If you do not see a confirmation email soon, check your spam folder.</p>
+    {% else %}
+    <p class="muted">Email delivery is not configured on this server yet, so a confirmation message was recorded for administrators instead of being sent to your inbox.</p>
+    {% endif %}
     <p class="muted">You will not be able to sign in until an administrator approves your request.</p>
     <p><a class="button" href="{{ url_for('login') }}">Back to sign in</a></p>
   </section>
