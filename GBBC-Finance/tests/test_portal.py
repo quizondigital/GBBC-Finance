@@ -176,19 +176,23 @@ def test_signup_and_admin_approval_flow(client):
     mismatch = client.post('/signup', data={
         'csrf_token': token(client),
         'first_name': 'Pat', 'last_name': 'Applicant', 'email': 'pat@example.org',
-        'password': 'Secure1!', 'confirm_password': 'Secure2!', 'role': 'Finance',
+        'password': 'Secure1!', 'confirm_password': 'Secure2!', 'role': 'Finance Staff',
     }, follow_redirects=True)
     assert b'do not match' in mismatch.data
     signup_page = client.get('/signup')
     assert b'password-toggle' in signup_page.data
     assert b'Show' in signup_page.data
+    assert b'Finance Staff' in signup_page.data
+    assert b'System Administrator' in signup_page.data
+    assert b'value="Admin"' not in signup_page.data
+    assert b'value="Finance"' not in signup_page.data  # exact Finance role removed; Finance Staff remains
     ok = client.post('/signup', data={
         'csrf_token': token(client),
         'first_name': 'Pat', 'last_name': 'Applicant', 'email': 'pat@example.org',
         'password': 'Secure1!', 'confirm_password': 'Secure1!', 'role': 'People Viewer',
     }, follow_redirects=True)
     assert b'approved by an administrator' in ok.data
-    assert b'Admin\'s email address' in ok.data or b"Admin's email address" in ok.data
+    assert b"administrator's email address" in ok.data
     assert b'Email delivery is not configured' in ok.data
     with client.application.app_context():
         pending = db.session.scalar(db.select(SignupRequest).filter_by(email='pat@example.org'))
@@ -222,12 +226,12 @@ def test_signup_and_admin_approval_flow(client):
     assert b'Overview</span>' not in client.get('/people').data
     assert b'User Management</span>' not in client.get('/people').data
 
-def test_finance_signup_role_cannot_access_approvals(client):
+def test_finance_staff_signup_role_cannot_access_approvals(client):
     client.get('/signup')
     client.post('/signup', data={
         'csrf_token': token(client),
         'first_name': 'Fin', 'last_name': 'Staffish', 'email': 'fin@example.org',
-        'password': 'Secure1!', 'confirm_password': 'Secure1!', 'role': 'Finance',
+        'password': 'Secure1!', 'confirm_password': 'Secure1!', 'role': 'Finance Staff',
     })
     login(client, 'sally@example.org')
     with client.application.app_context():
@@ -255,12 +259,12 @@ def test_finance_signup_role_cannot_access_approvals(client):
     assert b'Utilities</span>' in home
     assert b'User Management</span>' not in home
 
-def test_admin_signup_role_can_approve(client):
+def test_system_administrator_signup_role_can_approve(client):
     client.get('/signup')
     client.post('/signup', data={
         'csrf_token': token(client),
         'first_name': 'Ada', 'last_name': 'Adminish', 'email': 'ada.admin@example.org',
-        'password': 'Secure1!', 'confirm_password': 'Secure1!', 'role': 'Admin',
+        'password': 'Secure1!', 'confirm_password': 'Secure1!', 'role': 'System Administrator',
     })
     client.get('/signup')
     client.post('/signup', data={
@@ -288,6 +292,29 @@ def test_admin_signup_role_can_approve(client):
     with client.application.app_context():
         assert db.session.scalar(db.select(SignupRequest).filter_by(email='viewer2@example.org')).status == 'denied'
         assert db.session.scalar(db.select(User).filter_by(email='viewer2@example.org')) is None
+
+def test_legacy_admin_finance_roles_are_migrated(client):
+    with client.application.app_context():
+        db.session.add(User(
+            first_name='Legacy', last_name='Admin', email='legacy.admin@example.org', phone='555-0102',
+            role='Admin', password_hash=_hash('correct-password'),
+        ))
+        db.session.add(User(
+            first_name='Legacy', last_name='Finance', email='legacy.finance@example.org', phone='555-0103',
+            role='Finance', password_hash=_hash('correct-password'),
+        ))
+        db.session.add(SignupRequest(
+            first_name='Pend', last_name='Ing', email='pending.legacy@example.org',
+            password_hash=_hash('Secure1!'), requested_role='Admin', status='pending',
+        ))
+        db.session.commit()
+        from app import migrate_legacy_roles
+        migrate_legacy_roles()
+        assert db.session.scalar(db.select(User).filter_by(email='legacy.admin@example.org')).role == 'System Administrator'
+        assert db.session.scalar(db.select(User).filter_by(email='legacy.finance@example.org')).role == 'Finance Staff'
+        assert db.session.scalar(db.select(SignupRequest).filter_by(email='pending.legacy@example.org')).requested_role == 'System Administrator'
+        assert 'Admin' not in __import__('app', fromlist=['ROLES']).ROLES
+        assert 'Finance' not in __import__('app', fromlist=['ROLES']).ROLES
 
 def test_signup_sends_email_when_smtp_configured(client, monkeypatch):
     sent = []

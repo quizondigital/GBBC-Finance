@@ -24,8 +24,12 @@ from reportlab.lib.utils import ImageReader, simpleSplit
 from reportlab.pdfgen import canvas
 from werkzeug.security import check_password_hash, generate_password_hash
 
-ROLES = ('Super Admin', 'System Administrator', 'Finance Staff', 'Church Leader', 'Admin', 'Finance', 'People Viewer')
-SIGNUP_ROLES = ('Admin', 'Finance', 'People Viewer')
+ROLES = ('Super Admin', 'System Administrator', 'Finance Staff', 'Church Leader', 'People Viewer')
+SIGNUP_ROLES = ('System Administrator', 'Finance Staff', 'People Viewer')
+LEGACY_ROLE_MAP = {
+    'Admin': 'System Administrator',
+    'Finance': 'Finance Staff',
+}
 US_STATES = (
     ('AL', 'Alabama'), ('AK', 'Alaska'), ('AZ', 'Arizona'), ('AR', 'Arkansas'), ('CA', 'California'),
     ('CO', 'Colorado'), ('CT', 'Connecticut'), ('DE', 'Delaware'), ('DC', 'District of Columbia'),
@@ -47,11 +51,9 @@ FUND_ALIASES = {
 }
 PERMISSIONS = {
     'Super Admin': {'overview', 'people_view', 'people_write', 'gift_view', 'gift_write', 'reports', 'detail_reports', 'statements', 'users', 'roles', 'fiscal', 'feedback', 'settings', 'feedback_review', 'audit_view', 'utilities', 'approvals'},
-    'System Administrator': {'overview', 'people_view', 'reports', 'users', 'roles', 'fiscal', 'feedback', 'settings', 'feedback_review', 'audit_view', 'utilities'},
+    'System Administrator': {'overview', 'people_view', 'reports', 'users', 'roles', 'fiscal', 'feedback', 'settings', 'feedback_review', 'audit_view', 'utilities', 'approvals'},
     'Finance Staff': {'overview', 'people_view', 'people_write', 'gift_view', 'gift_write', 'reports', 'detail_reports', 'statements', 'feedback', 'utilities'},
     'Church Leader': {'overview', 'people_view', 'reports', 'feedback', 'utilities'},
-    'Admin': {'overview', 'people_view', 'people_write', 'gift_view', 'gift_write', 'reports', 'detail_reports', 'statements', 'utilities', 'approvals'},
-    'Finance': {'overview', 'people_view', 'people_write', 'gift_view', 'gift_write', 'reports', 'detail_reports', 'statements', 'utilities'},
     'People Viewer': {'people_view'},
 }
 PAGE_MATRIX = [
@@ -441,10 +443,29 @@ def read_person_address(source):
     zip_code = normalize_zip(get('zip_code') or get('zip') or '')
     return line1, line2, city, state, zip_code
 
+def migrate_legacy_roles():
+    """Map retired Admin/Finance roles onto System Administrator/Finance Staff."""
+    from sqlalchemy import inspect, text
+    tables = set(inspect(db.engine).get_table_names())
+    if 'user' in tables:
+        for old_role, new_role in LEGACY_ROLE_MAP.items():
+            db.session.execute(
+                text('UPDATE user SET role = :new_role WHERE role = :old_role'),
+                {'new_role': new_role, 'old_role': old_role},
+            )
+    if 'signup_request' in tables:
+        for old_role, new_role in LEGACY_ROLE_MAP.items():
+            db.session.execute(
+                text('UPDATE signup_request SET requested_role = :new_role WHERE requested_role = :old_role'),
+                {'new_role': new_role, 'old_role': old_role},
+            )
+    db.session.commit()
+
 def ensure_schema():
     """Add columns introduced after the first release; migrate legacy person.address."""
     from sqlalchemy import inspect, text
     db.create_all()
+    migrate_legacy_roles()
     inspector = inspect(db.engine)
     tables = set(inspector.get_table_names())
     if 'user' in tables:
@@ -1522,7 +1543,7 @@ def create_app(test_config=None):
                 if not valid_email(form['email']):
                     raise ValueError('Enter a valid email address. This email is your user ID.')
                 if form['role'] not in SIGNUP_ROLES:
-                    raise ValueError('Choose a role: Admin, Finance, or People Viewer.')
+                    raise ValueError('Choose a role: System Administrator, Finance Staff, or People Viewer.')
                 validate_signup_password(password)
                 if password != confirm:
                     raise ValueError('Password and confirmation do not match.')
