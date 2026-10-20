@@ -299,8 +299,12 @@ def test_signup_sends_email_when_smtp_configured(client, monkeypatch):
             return self
         def __exit__(self, *args):
             return False
+        def ehlo(self):
+            sent.append('ehlo')
+            return (250, b'ok')
         def starttls(self):
             sent.append('starttls')
+            return (220, b'ready')
         def login(self, username, password):
             sent.append(('login', username, password))
         def send_message(self, message):
