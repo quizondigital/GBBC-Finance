@@ -203,7 +203,7 @@ def test_signup_and_admin_approval_flow(client):
     approvals = client.get('/approvals')
     assert approvals.status_code == 200
     assert b'Pat Applicant' in approvals.data
-    assert b'Approvals' in client.get('/people').data
+    assert b'User Management' in client.get('/people').data
     approved = client.post('/approvals', data={
         'csrf_token': token(client), 'signup_id': '1', 'action': 'approve',
     }, follow_redirects=True)
@@ -219,7 +219,7 @@ def test_signup_and_admin_approval_flow(client):
     assert client.get('/contributions').status_code == 403
     assert client.get('/approvals').status_code == 403
     assert b'Overview</span>' not in client.get('/people').data
-    assert b'Approvals</span>' not in client.get('/people').data
+    assert b'User Management</span>' not in client.get('/people').data
 
 def test_finance_signup_role_cannot_access_approvals(client):
     client.get('/signup')
@@ -252,7 +252,7 @@ def test_finance_signup_role_cannot_access_approvals(client):
     home = client.get('/').data
     assert b'Reports</span>' in home
     assert b'Utilities</span>' in home
-    assert b'Approvals</span>' not in home
+    assert b'User Management</span>' not in home
 
 def test_admin_signup_role_can_approve(client):
     client.get('/signup')
@@ -276,12 +276,56 @@ def test_admin_signup_role_can_approve(client):
     client.post('/logout', data={'csrf_token': token(client)})
     client.get('/login')
     client.post('/login', data={'csrf_token': token(client), 'email': 'ada.admin@example.org', 'password': 'Secure1!'}, follow_redirects=True)
-    assert client.get('/approvals').status_code == 200
+    page = client.get('/approvals')
+    assert page.status_code == 200
+    assert b'User Management' in page.data
+    assert b'Existing accounts' in page.data
+    assert b'Sally Admin' in page.data
+    assert b'password_hash' not in page.data
     denied = client.post('/approvals', data={'csrf_token': token(client), 'signup_id': str(viewer_id), 'action': 'deny'}, follow_redirects=True)
     assert b'Denied Vie Wer' in denied.data
     with client.application.app_context():
         assert db.session.scalar(db.select(SignupRequest).filter_by(email='viewer2@example.org')).status == 'denied'
         assert db.session.scalar(db.select(User).filter_by(email='viewer2@example.org')) is None
+
+def test_user_management_edit_and_delete_accounts(client):
+    client.get('/signup')
+    client.post('/signup', data={
+        'csrf_token': token(client),
+        'first_name': 'Vie', 'last_name': 'Wer', 'email': 'viewer3@example.org',
+        'password': 'Secure1!', 'confirm_password': 'Secure1!', 'role': 'People Viewer',
+    })
+    login(client, 'sally@example.org')
+    with client.application.app_context():
+        req = db.session.scalar(db.select(SignupRequest).filter_by(email='viewer3@example.org'))
+        req_id = req.id
+    client.post('/approvals', data={'csrf_token': token(client), 'signup_id': str(req_id), 'action': 'approve'}, follow_redirects=True)
+    with client.application.app_context():
+        account = db.session.scalar(db.select(User).filter_by(email='viewer3@example.org'))
+        account_id = account.id
+        password_hash = account.password_hash
+    edit_page = client.get(f'/approvals/users/{account_id}/edit')
+    assert edit_page.status_code == 200
+    assert b'Edit account' in edit_page.data
+    assert b'Leave blank to keep current password' in edit_page.data
+    assert b'password_hash' not in edit_page.data
+    assert password_hash.encode() not in edit_page.data
+    saved = client.post(f'/approvals/users/{account_id}/edit', data={
+        'csrf_token': token(client),
+        'first_name': 'View', 'last_name': 'Erson', 'email': 'viewer3@example.org',
+        'username': 'viewer3', 'phone': '555-0199', 'role': 'People Viewer', 'active': '1', 'password': '',
+    }, follow_redirects=True)
+    assert b'Account updated' in saved.data
+    assert b'View Erson' in saved.data
+    with client.application.app_context():
+        account = db.session.get(User, account_id)
+        assert account.first_name == 'View' and account.phone == '555-0199' and account.username == 'viewer3'
+    deleted = client.post(f'/approvals/users/{account_id}/delete', data={'csrf_token': token(client)}, follow_redirects=True)
+    assert b'Deleted account viewer3@example.org' in deleted.data
+    with client.application.app_context():
+        assert db.session.get(User, account_id) is None
+    # Cannot delete own account
+    assert client.post('/approvals/users/1/delete', data={'csrf_token': token(client)}).status_code == 403
 
 def test_contribution_csv_import(client):
     login(client, 'sally@example.org')

@@ -3,12 +3,63 @@
 <div class="heading">
   <div>
     <p class="eyebrow">Administration</p>
-    <h1>Approvals</h1>
-    <p class="muted">Review signup requests. Approving creates the account; denying rejects it. The registrant is notified from your email address.</p>
+    <h1>User Management</h1>
+    <p class="muted">View and manage portal accounts, and review signup requests. Passwords are never shown.</p>
   </div>
 </div>
 
 <section class="card">
+  <div class="card-head">
+    <h2>Existing accounts</h2>
+    <p>{{ accounts|length }} account{% if accounts|length != 1 %}s{% endif %}</p>
+  </div>
+  {% if accounts %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Email</th>
+          <th>Username</th>
+          <th>Phone</th>
+          <th>Role</th>
+          <th>Status</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for account in accounts %}
+        <tr>
+          <td><strong>{{ account.name }}</strong></td>
+          <td>{{ account.email }}</td>
+          <td>{{ account.username or '—' }}</td>
+          <td>{{ account.phone or '—' }}</td>
+          <td><span class="pill">{{ account.role }}</span></td>
+          <td>{{ 'Active' if account.active else 'Inactive' }}</td>
+          <td class="approval-actions">
+            {% if current_user.role == 'Super Admin' or account.role != 'Super Admin' %}
+            <a class="button secondary" href="{{ url_for('approvals_user_edit', user_id=account.id) }}">Edit</a>
+            {% if account.id != current_user.id %}
+            <form method="post" action="{{ url_for('approvals_user_delete', user_id=account.id) }}" class="inline" onsubmit="return confirm('Delete account {{ account.email }}? This cannot be undone.');">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <button class="button secondary" type="submit">Delete</button>
+            </form>
+            {% endif %}
+            {% else %}
+            <span class="muted">Protected</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty">No accounts yet.</p>
+  {% endif %}
+</section>
+
+<section class="card" style="margin-top:20px">
   <div class="card-head">
     <h2>Pending signup requests</h2>
     <p>{{ pending|length }} waiting for a decision</p>

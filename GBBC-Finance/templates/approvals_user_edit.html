@@ -1,0 +1,55 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="heading">
+  <div>
+    <p class="eyebrow">User Management</p>
+    <h1>Edit account</h1>
+    <p class="muted">Update contact details and role for {{ user.name }}. The current password is never displayed.</p>
+  </div>
+</div>
+
+<section class="card form-card">
+  <form method="post" class="form-grid">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <label>First name <em>required</em>
+      <input name="first_name" required value="{{ user.first_name }}">
+    </label>
+    <label>Last name <em>required</em>
+      <input name="last_name" required value="{{ user.last_name }}">
+    </label>
+    <label>Email address <em>required</em>
+      <input name="email" type="email" required value="{{ user.email }}">
+    </label>
+    <label>Username (optional)
+      <input name="username" value="{{ user.username or '' }}">
+    </label>
+    <label>Phone number
+      <input name="phone" type="tel" value="{{ user.phone or '' }}">
+    </label>
+    <label>Role <em>required</em>
+      <select name="role" required>
+        {% for role in roles %}
+        <option value="{{ role }}" {% if user.role == role %}selected{% endif %}>{{ role }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Status
+      <select name="active" {% if user.id == current_user.id %}disabled{% endif %}>
+        <option value="1" {% if user.active %}selected{% endif %}>Active</option>
+        <option value="0" {% if not user.active %}selected{% endif %}>Inactive</option>
+      </select>
+      {% if user.id == current_user.id %}
+      <input type="hidden" name="active" value="1">
+      <small class="muted">You cannot deactivate your own account.</small>
+      {% endif %}
+    </label>
+    <label>Replacement password
+      <input name="password" type="password" minlength="8" autocomplete="new-password" placeholder="Leave blank to keep current password">
+    </label>
+    <div class="form-actions">
+      <a class="button secondary" href="{{ url_for('approvals') }}">Cancel</a>
+      <button class="button" type="submit">Save account</button>
+    </div>
+  </form>
+</section>
+{% endblock %}

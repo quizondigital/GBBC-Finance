@@ -59,7 +59,7 @@ PAGE_MATRIX = [
     ('Contribution detail', 'gift_view'), ('Record and correct gifts', 'gift_write'), ('Aggregate giving reports', 'reports'),
     ('Individual giving reports', 'detail_reports'), ('Giving statements', 'statements'),
     ('Utilities', 'utilities'),
-    ('Signup approvals', 'approvals'),
+    ('User management (accounts and signup approvals)', 'approvals'),
     ('User administration', 'users'), ('Role permissions', 'roles'), ('Fiscal-year administration', 'fiscal'),
     ('Feedback', 'feedback'), ('Website settings', 'settings'),
     ('Review submitted feedback', 'feedback_review'), ('Audit history', 'audit_view'),
@@ -2162,6 +2162,18 @@ def create_app(test_config=None):
                 flash('Feedback sent.', 'success'); return redirect(url_for('help_page'))
         return render_template('help.html')
 
+    def _can_manage_managed_user(target):
+        if target.id == g.user.id:
+            return False
+        if target.role == 'Super Admin' and g.user.role != 'Super Admin':
+            return False
+        return True
+
+    def _managed_account_roles():
+        if g.user.role == 'Super Admin':
+            return list(ROLES)
+        return [role for role in ROLES if role != 'Super Admin']
+
     @app.route('/approvals', methods=['GET', 'POST'])
     @require('approvals')
     def approvals():
@@ -2224,7 +2236,96 @@ def create_app(test_config=None):
         recent = db.session.scalars(
             db.select(SignupRequest).where(SignupRequest.status != 'pending').order_by(SignupRequest.reviewed_at.desc()).limit(25)
         ).all()
-        return render_template('approvals.html', pending=pending, recent=recent)
+        accounts = db.session.scalars(db.select(User).order_by(User.last_name, User.first_name)).all()
+        return render_template('approvals.html', pending=pending, recent=recent, accounts=accounts)
+
+    @app.route('/approvals/users/<int:user_id>/edit', methods=['GET', 'POST'])
+    @require('approvals')
+    def approvals_user_edit(user_id):
+        user = db.get_or_404(User, user_id)
+        if user.role == 'Super Admin' and g.user.role != 'Super Admin':
+            abort(403)
+        roles = _managed_account_roles()
+        if request.method == 'POST':
+            first = request.form.get('first_name', '').strip()
+            last = request.form.get('last_name', '').strip()
+            email = request.form.get('email', '').strip().lower()
+            username = request.form.get('username', '').strip().lower() or None
+            phone = request.form.get('phone', '').strip()
+            role = request.form.get('role', '')
+            active = request.form.get('active') == '1'
+            other = db.session.scalar(db.select(User).where(User.email == email, User.id != user.id))
+            other_username = (
+                db.session.scalar(db.select(User).where(User.username == username, User.id != user.id))
+                if username else None
+            )
+            if not first or not last or not valid_email(email) or role not in roles:
+                flash('First name, last name, valid email, and role are required.', 'error')
+            elif other:
+                flash('That email address is already used.', 'error')
+            elif other_username:
+                flash('That username is already used.', 'error')
+            elif role == 'Super Admin' and g.user.role != 'Super Admin':
+                abort(403)
+            elif (
+                user.role == 'Super Admin'
+                and (role != 'Super Admin' or not active)
+                and db.session.scalar(db.select(db.func.count(User.id)).filter_by(role='Super Admin', active=True)) <= 1
+                and user.active
+            ):
+                flash('The last active Super Admin cannot be deactivated or demoted.', 'error')
+            elif user.id == g.user.id and not active:
+                flash('You cannot deactivate your own account.', 'error')
+            else:
+                user.first_name = first
+                user.last_name = last
+                user.email = email
+                user.username = username
+                user.phone = phone or ''
+                user.role = role
+                if user.id != g.user.id:
+                    user.active = active
+                password = request.form.get('password', '')
+                if password:
+                    if len(password) < 8:
+                        flash('A replacement password must contain at least 8 characters.', 'error')
+                        return render_template('approvals_user_edit.html', user=user, roles=roles)
+                    user.password_hash = hash_password(password)
+                audit('update', 'user', user.id, summary='user management')
+                db.session.commit()
+                flash('Account updated.', 'success')
+                return redirect(url_for('approvals'))
+        return render_template('approvals_user_edit.html', user=user, roles=roles)
+
+    @app.post('/approvals/users/<int:user_id>/delete')
+    @require('approvals')
+    def approvals_user_delete(user_id):
+        user = db.get_or_404(User, user_id)
+        if not _can_manage_managed_user(user):
+            abort(403)
+        if user.role == 'Super Admin' and user.active:
+            count = db.session.scalar(db.select(db.func.count(User.id)).filter_by(role='Super Admin', active=True))
+            if count <= 1:
+                flash('The last active Super Admin cannot be deleted.', 'error')
+                return redirect(url_for('approvals'))
+        gift_count = db.session.scalar(db.select(db.func.count(Gift.id)).filter_by(entered_by_id=user.id)) or 0
+        feedback_count = db.session.scalar(db.select(db.func.count(Feedback.id)).filter_by(user_id=user.id)) or 0
+        if gift_count or feedback_count:
+            flash(
+                f'Cannot delete {user.name}: this account still has recorded gifts or feedback. '
+                'Deactivate the account instead.',
+                'error',
+            )
+            return redirect(url_for('approvals'))
+        db.session.execute(db.update(Audit).where(Audit.user_id == user.id).values(user_id=None))
+        db.session.execute(
+            db.update(SignupRequest).where(SignupRequest.reviewed_by_id == user.id).values(reviewed_by_id=None)
+        )
+        audit('delete', 'user', user.id, summary=user.email)
+        db.session.delete(user)
+        db.session.commit()
+        flash(f'Deleted account {user.email}.', 'success')
+        return redirect(url_for('approvals'))
 
     @app.route('/admin/feedback', methods=['GET', 'POST'])
     @require('feedback_review')
