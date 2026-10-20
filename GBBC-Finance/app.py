@@ -11,6 +11,7 @@ from decimal import Decimal, InvalidOperation
 from functools import wraps
 from pathlib import Path
 from urllib.parse import urlparse
+from zoneinfo import ZoneInfo
 
 import click
 from flask import Flask, abort, current_app, flash, g, redirect, render_template, request, send_file, session, url_for
@@ -50,8 +51,8 @@ FUND_ALIASES = {
     'Benevolence': 'Benevolence Fund',
 }
 PERMISSIONS = {
-    'Super Admin': {'overview', 'people_view', 'people_write', 'gift_view', 'gift_write', 'reports', 'detail_reports', 'statements', 'users', 'roles', 'fiscal', 'feedback', 'settings', 'feedback_review', 'audit_view', 'utilities', 'approvals'},
-    'System Administrator': {'overview', 'people_view', 'reports', 'users', 'roles', 'fiscal', 'feedback', 'settings', 'feedback_review', 'audit_view', 'utilities', 'approvals'},
+    'Super Admin': {'overview', 'people_view', 'people_write', 'gift_view', 'gift_write', 'reports', 'detail_reports', 'statements', 'users', 'roles', 'fiscal', 'feedback', 'settings', 'feedback_review', 'audit_view', 'utilities'},
+    'System Administrator': {'overview', 'people_view', 'reports', 'users', 'roles', 'fiscal', 'feedback', 'settings', 'feedback_review', 'audit_view', 'utilities'},
     'Finance Staff': {'overview', 'people_view', 'people_write', 'gift_view', 'gift_write', 'reports', 'detail_reports', 'statements', 'feedback', 'utilities'},
     'Church Leader': {'overview', 'people_view', 'reports', 'feedback', 'utilities'},
     'People Viewer': {'people_view'},
@@ -61,8 +62,7 @@ PAGE_MATRIX = [
     ('Contribution detail', 'gift_view'), ('Record and correct gifts', 'gift_write'), ('Aggregate giving reports', 'reports'),
     ('Individual giving reports', 'detail_reports'), ('Giving statements', 'statements'),
     ('Utilities', 'utilities'),
-    ('User management (accounts and signup approvals)', 'approvals'),
-    ('User administration', 'users'), ('Role permissions', 'roles'), ('Fiscal-year administration', 'fiscal'),
+    ('User administration and signup approvals', 'users'), ('Role permissions', 'roles'), ('Fiscal-year administration', 'fiscal'),
     ('Feedback', 'feedback'), ('Website settings', 'settings'),
     ('Review submitted feedback', 'feedback_review'), ('Audit history', 'audit_view'),
 ]
@@ -151,6 +151,8 @@ class Audit(db.Model):
     entity_id = db.Column(db.Integer)
     timestamp = db.Column(db.DateTime, default=lambda: utcnow(), nullable=False)
     summary = db.Column(db.String(255), default='')
+    reason = db.Column(db.String(255), default='')
+    details = db.Column(db.Text, default='')
 
 class Setting(db.Model):
     key = db.Column(db.String(80), primary_key=True)
@@ -377,8 +379,57 @@ def excel_safe(value):
     text = str(value)
     return "'" + text if text.startswith(('=', '+', '-', '@', '\t', '\r')) else text
 
-def audit(action, entity, entity_id=None, summary=''):
-    db.session.add(Audit(user_id=g.user.id if g.user else None, action=action, entity=entity, entity_id=entity_id, summary=summary[:255]))
+EASTERN_TZ = ZoneInfo('America/New_York')
+
+def format_eastern(dt):
+    """Format a naive-UTC or aware datetime in America/New_York."""
+    if dt is None:
+        return ''
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(EASTERN_TZ).strftime('%Y-%m-%d %H:%M %Z')
+
+def audit_display_value(value):
+    if value is None:
+        return '(empty)'
+    if isinstance(value, bool):
+        return 'Yes' if value else 'No'
+    if isinstance(value, Decimal):
+        return f'{value:.2f}'
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return value.isoformat()
+    text = str(value).strip()
+    return text if text else '(empty)'
+
+def format_audit_changes(changes):
+    """changes: iterable of (label, old_value, new_value)."""
+    lines = []
+    for label, old, new in changes:
+        old_text = audit_display_value(old)
+        new_text = audit_display_value(new)
+        if old_text == new_text:
+            continue
+        lines.append(f'{label}: {old_text} → {new_text}')
+    return '\n'.join(lines)
+
+def require_audit_reason(required=True):
+    reason = (request.form.get('audit_reason') or '').strip()
+    if required and not reason:
+        raise ValueError('A reason for this change is required.')
+    return reason[:255]
+
+def audit(action, entity, entity_id=None, summary='', reason='', details='', changes=None):
+    if changes is not None and not details:
+        details = format_audit_changes(changes)
+    db.session.add(Audit(
+        user_id=g.user.id if g.user else None,
+        action=action,
+        entity=entity,
+        entity_id=entity_id,
+        summary=(summary or '')[:255],
+        reason=(reason or '')[:255],
+        details=details or '',
+    ))
 
 def valid_email(value):
     return bool(re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+', value))
@@ -472,6 +523,14 @@ def ensure_schema():
         user_cols = {col['name'] for col in inspector.get_columns('user')}
         if 'username' not in user_cols:
             db.session.execute(text('ALTER TABLE user ADD COLUMN username VARCHAR(100)'))
+            db.session.commit()
+    if 'audit' in tables:
+        audit_cols = {col['name'] for col in inspector.get_columns('audit')}
+        if 'reason' not in audit_cols:
+            db.session.execute(text("ALTER TABLE audit ADD COLUMN reason VARCHAR(255) DEFAULT ''"))
+            db.session.commit()
+        if 'details' not in audit_cols:
+            db.session.execute(text("ALTER TABLE audit ADD COLUMN details TEXT DEFAULT ''"))
             db.session.commit()
     if 'person' not in tables:
         return
@@ -1661,9 +1720,14 @@ def create_app(test_config=None):
         if gift_count:
             flash('Cannot delete a person who has contribution records. Remove or reassign those gifts first.', 'error')
             return redirect(url_for('people'))
+        try:
+            reason = require_audit_reason()
+        except ValueError as exc:
+            flash(str(exc), 'error')
+            return redirect(url_for('people'))
         name = person.name
         db.session.delete(person)
-        audit('delete', 'person', person_id, summary=name)
+        audit('delete', 'person', person_id, summary=name, reason=reason)
         db.session.commit()
         flash(f'{name} deleted.', 'success')
         return redirect(url_for('people'))
@@ -1677,15 +1741,34 @@ def create_app(test_config=None):
             else:
                 try:
                     line1, line2, city, state, zip_code = read_person_address(request.form)
+                    reason = require_audit_reason(required=person is not None)
                 except ValueError as exc:
                     flash(str(exc), 'error')
                 else:
-                    if person is None: person = Person(); db.session.add(person)
+                    creating = person is None
+                    before = None if creating else {
+                        'First name': person.first_name, 'Last name': person.last_name, 'Member type': person.member_type,
+                        'Email': person.email, 'Phone': person.phone, 'Address line 1': person.address_line1,
+                        'Address line 2': person.address_line2, 'City': person.city, 'State': person.state, 'ZIP': person.zip_code,
+                    }
+                    if creating:
+                        person = Person(); db.session.add(person)
                     person.first_name = first; person.last_name = last; person.member_type = kind
                     person.email = request.form.get('email', '').strip(); person.phone = request.form.get('phone', '').strip()
                     person.address_line1 = line1; person.address_line2 = line2
                     person.city = city; person.state = state; person.zip_code = zip_code
-                    db.session.flush(); audit('save', 'person', person.id); db.session.commit()
+                    db.session.flush()
+                    if creating:
+                        audit('create', 'person', person.id, summary=person.name)
+                    else:
+                        after = {
+                            'First name': person.first_name, 'Last name': person.last_name, 'Member type': person.member_type,
+                            'Email': person.email, 'Phone': person.phone, 'Address line 1': person.address_line1,
+                            'Address line 2': person.address_line2, 'City': person.city, 'State': person.state, 'ZIP': person.zip_code,
+                        }
+                        changes = [(label, before[label], after[label]) for label in before]
+                        audit('update', 'person', person.id, summary=person.name, reason=reason, changes=changes)
+                    db.session.commit()
                     flash('Person saved.', 'success'); return redirect(url_for('people'))
         return render_template('person_form.html', person=person)
 
@@ -1931,12 +2014,40 @@ def create_app(test_config=None):
                 if not year or not person or not fund or not year.is_open: raise ValueError('Choose an active person, fund, and open fiscal year.')
                 if not (year.start_date <= gift_date <= year.end_date): raise ValueError('Date must fall within the selected fiscal year.')
                 if gift and not gift.fiscal_year.is_open: raise ValueError('Closed-year gifts cannot be edited.')
-                if gift is None: gift = Gift(entered_by_id=g.user.id); db.session.add(gift)
+                reason = require_audit_reason(required=gift is not None)
+                creating = gift is None
+                before = None
+                if not creating:
+                    before = {
+                        'Contributor': gift.person.name, 'Fund': gift.fund.name, 'Amount': gift.amount,
+                        'Date': gift.date, 'Method': gift.method, 'Reference': gift.reference, 'Note': gift.note,
+                        'Fiscal year': gift.fiscal_year.name,
+                    }
+                if creating:
+                    gift = Gift(entered_by_id=g.user.id); db.session.add(gift)
                 gift.person = person; gift.fund = fund; gift.fiscal_year = year; gift.date = gift_date; gift.amount = amount
                 gift.method = request.form.get('method', '').strip(); gift.reference = request.form.get('reference', '').strip()
                 gift.note = request.form.get('note', '').strip()
                 if gift.method not in ('Check', 'Cash', 'Online', 'Other'): raise ValueError('Choose a payment method.')
-                db.session.flush(); audit('save', 'gift', gift.id); db.session.commit()
+                db.session.flush()
+                if creating:
+                    note_text = gift.note or '(empty)'
+                    audit(
+                        'create',
+                        'gift',
+                        gift.id,
+                        summary=f'{person.name} · {fund.name} · ${amount} · {note_text}',
+                        details=f'Contributor: {person.name}\nFund: {fund.name}\nAmount: {amount}\nNote: {note_text}',
+                    )
+                else:
+                    after = {
+                        'Contributor': gift.person.name, 'Fund': gift.fund.name, 'Amount': gift.amount,
+                        'Date': gift.date, 'Method': gift.method, 'Reference': gift.reference, 'Note': gift.note,
+                        'Fiscal year': gift.fiscal_year.name,
+                    }
+                    changes = [(label, before[label], after[label]) for label in before]
+                    audit('update', 'gift', gift.id, summary=person.name, reason=reason, changes=changes)
+                db.session.commit()
                 flash('Contribution saved.', 'success'); return redirect(url_for('contributions'))
             except (ValueError, KeyError) as exc: flash(str(exc), 'error')
         return render_template('gift_form.html', gift=gift, years=years, funds=funds, people=persons, default_fund_id=default_fund.id if default_fund else None)
@@ -1946,7 +2057,14 @@ def create_app(test_config=None):
     def gift_void(gift_id):
         gift = db.get_or_404(Gift, gift_id)
         if not gift.fiscal_year.is_open: abort(403)
-        gift.status = 'void'; audit('void', 'gift', gift.id); db.session.commit(); flash('Contribution voided.', 'success')
+        try:
+            reason = require_audit_reason()
+        except ValueError as exc:
+            flash(str(exc), 'error')
+            return redirect(url_for('contributions'))
+        gift.status = 'void'
+        audit('void', 'gift', gift.id, summary=gift.person.name, reason=reason, changes=[('Status', 'active', 'void')])
+        db.session.commit(); flash('Contribution voided.', 'success')
         return redirect(url_for('contributions'))
 
     @app.post('/contributions/<int:gift_id>/delete')
@@ -1956,9 +2074,15 @@ def create_app(test_config=None):
         if not gift.fiscal_year.is_open:
             flash('Closed-year contributions cannot be deleted.', 'error')
             return redirect(url_for('contributions'))
+        try:
+            reason = require_audit_reason()
+        except ValueError as exc:
+            flash(str(exc), 'error')
+            return redirect(url_for('contributions'))
         summary = f'{gift.person.name} ${gift.amount} on {gift.date.isoformat()}'
+        details = f'Contributor: {gift.person.name}\nFund: {gift.fund.name}\nAmount: {gift.amount}\nNote: {gift.note or "(empty)"}'
         db.session.delete(gift)
-        audit('delete', 'gift', gift_id, summary=summary)
+        audit('delete', 'gift', gift_id, summary=summary, reason=reason, details=details)
         db.session.commit()
         flash('Contribution deleted.', 'success')
         return redirect(url_for('contributions'))
@@ -1968,8 +2092,18 @@ def create_app(test_config=None):
     def gift_reconcile(gift_id):
         gift = db.get_or_404(Gift, gift_id)
         if gift.status != 'active' or not gift.fiscal_year.is_open: abort(403)
+        try:
+            reason = require_audit_reason()
+        except ValueError as exc:
+            flash(str(exc), 'error')
+            return redirect(url_for('contributions'))
+        old = gift.reconciled
         gift.reconciled = not gift.reconciled
-        audit('reconcile', 'gift', gift.id, str(gift.reconciled)); db.session.commit()
+        audit(
+            'reconcile', 'gift', gift.id, summary=gift.person.name, reason=reason,
+            changes=[('Reconciled', old, gift.reconciled)],
+        )
+        db.session.commit()
         flash('Reconciliation status updated.', 'success')
         return redirect(url_for('contributions'))
 
@@ -2093,10 +2227,79 @@ def create_app(test_config=None):
         audit('export', 'statement', person_id); db.session.commit()
         return send_file(out, download_name=f'GBBC_statement_{person_id}.pdf', as_attachment=True, mimetype='application/pdf')
 
+    def _handle_signup_decision():
+        signup_id = request.form.get('signup_id', type=int)
+        action = (request.form.get('action') or '').strip()
+        signup_req = db.get_or_404(SignupRequest, signup_id)
+        if signup_req.status != 'pending':
+            flash('That signup request was already reviewed.', 'error')
+            return redirect(url_for('users'))
+        if action not in ('approve', 'deny'):
+            abort(400)
+        try:
+            reason = require_audit_reason()
+        except ValueError as exc:
+            flash(str(exc), 'error')
+            return redirect(url_for('users'))
+        if action == 'approve':
+            if signup_req.requested_role not in SIGNUP_ROLES:
+                flash('This request has an invalid role and cannot be approved.', 'error')
+                return redirect(url_for('users'))
+            if db.session.scalar(db.select(User).where(db.func.lower(User.email) == signup_req.email.lower())):
+                flash('A user with that email already exists. Deny this request or resolve the conflict.', 'error')
+                return redirect(url_for('users'))
+            user = User(
+                first_name=signup_req.first_name,
+                last_name=signup_req.last_name,
+                email=signup_req.email.lower(),
+                phone='',
+                role=signup_req.requested_role,
+                password_hash=signup_req.password_hash,
+                active=True,
+            )
+            db.session.add(user)
+            db.session.flush()
+            signup_req.status = 'approved'
+            signup_req.reviewed_at = utcnow()
+            signup_req.reviewed_by_id = g.user.id
+            audit(
+                'approve', 'signup', signup_req.id,
+                summary=f'{signup_req.email} as {signup_req.requested_role}',
+                reason=reason,
+                changes=[('Status', 'pending', 'approved'), ('Role', '', signup_req.requested_role)],
+            )
+            db.session.commit()
+            try:
+                notify_signup_decision(signup_req, approved=True, reviewer=g.user)
+            except Exception:
+                current_app.logger.exception('Failed to notify signup approval')
+                flash('Account approved, but the notification email could not be sent.', 'error')
+                return redirect(url_for('users'))
+            flash(f'Approved {signup_req.name}. A notice was sent from your email address.', 'success')
+        else:
+            signup_req.status = 'denied'
+            signup_req.reviewed_at = utcnow()
+            signup_req.reviewed_by_id = g.user.id
+            audit(
+                'deny', 'signup', signup_req.id, summary=signup_req.email, reason=reason,
+                changes=[('Status', 'pending', 'denied')],
+            )
+            db.session.commit()
+            try:
+                notify_signup_decision(signup_req, approved=False, reviewer=g.user)
+            except Exception:
+                current_app.logger.exception('Failed to notify signup denial')
+                flash('Request denied, but the notification email could not be sent.', 'error')
+                return redirect(url_for('users'))
+            flash(f'Denied {signup_req.name}. A notice was sent from your email address.', 'success')
+        return redirect(url_for('users'))
+
     @app.route('/admin/users', methods=['GET', 'POST'])
     @require('users')
     def users():
         if request.method == 'POST':
+            if request.form.get('signup_id'):
+                return _handle_signup_decision()
             first = request.form.get('first_name', '').strip(); last = request.form.get('last_name', '').strip()
             email = request.form.get('email', '').strip().lower(); phone = request.form.get('phone', '').strip()
             role = request.form.get('role', ''); password = request.form.get('password', '')
@@ -2111,10 +2314,16 @@ def create_app(test_config=None):
                 abort(403)
             else:
                 user = User(first_name=first, last_name=last, email=email, username=username, phone=phone, role=role, password_hash=hash_password(password))
-                db.session.add(user); db.session.flush(); audit('create', 'user', user.id); db.session.commit()
+                db.session.add(user); db.session.flush(); audit('create', 'user', user.id, summary=user.email); db.session.commit()
                 flash('User created.', 'success'); return redirect(url_for('users'))
         all_users = db.session.scalars(db.select(User).order_by(User.last_name)).all()
-        return render_template('users.html', users=all_users)
+        pending = db.session.scalars(
+            db.select(SignupRequest).where(SignupRequest.status == 'pending').order_by(SignupRequest.created_at.asc())
+        ).all()
+        recent = db.session.scalars(
+            db.select(SignupRequest).where(SignupRequest.status != 'pending').order_by(SignupRequest.reviewed_at.desc()).limit(25)
+        ).all()
+        return render_template('users.html', users=all_users, pending=pending, recent=recent)
 
     @app.post('/admin/users/<int:user_id>/toggle')
     @require('users')
@@ -2124,7 +2333,18 @@ def create_app(test_config=None):
         if user.role == 'Super Admin' and user.active:
             count = db.session.scalar(db.select(db.func.count(User.id)).filter_by(role='Super Admin', active=True))
             if count <= 1: abort(403)
-        user.active = not user.active; audit('status', 'user', user.id, str(user.active)); db.session.commit()
+        try:
+            reason = require_audit_reason()
+        except ValueError as exc:
+            flash(str(exc), 'error')
+            return redirect(url_for('users'))
+        old = user.active
+        user.active = not user.active
+        audit(
+            'status', 'user', user.id, summary=user.email, reason=reason,
+            changes=[('Active', old, user.active)],
+        )
+        db.session.commit()
         return redirect(url_for('users'))
 
     @app.route('/admin/users/<int:user_id>/edit', methods=['GET', 'POST'])
@@ -2141,6 +2361,11 @@ def create_app(test_config=None):
             role = request.form.get('role', '')
             other = db.session.scalar(db.select(User).where(User.email == email, User.id != user.id))
             other_username = db.session.scalar(db.select(User).where(User.username == username, User.id != user.id)) if username else None
+            try:
+                reason = require_audit_reason()
+            except ValueError as exc:
+                flash(str(exc), 'error')
+                return render_template('user_edit.html', user=user)
             if not first or not last or not phone or not valid_email(email) or role not in ROLES:
                 flash('First name, last name, valid email, phone, and role are required.', 'error')
             elif other:
@@ -2152,14 +2377,28 @@ def create_app(test_config=None):
             elif user.role == 'Super Admin' and role != 'Super Admin' and db.session.scalar(db.select(db.func.count(User.id)).filter_by(role='Super Admin', active=True)) <= 1:
                 flash('The last active Super Admin cannot change role.', 'error')
             else:
+                before = {
+                    'First name': user.first_name, 'Last name': user.last_name, 'Email': user.email,
+                    'Username': user.username or '', 'Phone': user.phone, 'Role': user.role,
+                }
                 user.first_name = first; user.last_name = last; user.email = email; user.username = username; user.phone = phone; user.role = role
                 password = request.form.get('password', '')
+                password_changed = False
                 if password:
                     if len(password) < 12:
                         flash('A replacement password must contain at least 12 characters.', 'error')
                         return render_template('user_edit.html', user=user)
                     user.password_hash = hash_password(password)
-                audit('update', 'user', user.id); db.session.commit()
+                    password_changed = True
+                after = {
+                    'First name': user.first_name, 'Last name': user.last_name, 'Email': user.email,
+                    'Username': user.username or '', 'Phone': user.phone, 'Role': user.role,
+                }
+                changes = [(label, before[label], after[label]) for label in before]
+                if password_changed:
+                    changes.append(('Password', '(hidden)', '(updated)'))
+                audit('update', 'user', user.id, summary=user.email, reason=reason, changes=changes)
+                db.session.commit()
                 flash('User updated.', 'success'); return redirect(url_for('users'))
         return render_template('user_edit.html', user=user)
 
@@ -2208,28 +2447,47 @@ def create_app(test_config=None):
             if not church_name or not church_address:
                 flash('Church name and mailing address are required.', 'error')
                 return redirect(url_for('settings_page'))
-            set_setting('church_name', church_name)
-            set_setting('church_address', church_address)
-
-            set_setting('mail_from', request.form.get('mail_from', '').strip())
-            set_setting('smtp_host', request.form.get('smtp_host', '').strip())
             smtp_port = request.form.get('smtp_port', '').strip() or '587'
             if not smtp_port.isdigit():
                 flash('SMTP port must be a number (for example 587 or 465).', 'error')
                 return redirect(url_for('settings_page'))
-            set_setting('smtp_port', smtp_port)
-            set_setting('smtp_username', request.form.get('smtp_username', '').strip())
+            try:
+                reason = require_audit_reason()
+            except ValueError as exc:
+                flash(str(exc), 'error')
+                return redirect(url_for('settings_page'))
+            before = {item.key: item.value for item in db.session.scalars(db.select(Setting)).all()}
+            mail_from = request.form.get('mail_from', '').strip()
+            smtp_host = request.form.get('smtp_host', '').strip()
+            smtp_username = request.form.get('smtp_username', '').strip()
             encryption = (request.form.get('smtp_encryption') or 'starttls').strip().lower()
             if encryption not in ('starttls', 'ssl', 'none'):
                 encryption = 'starttls'
-            set_setting('smtp_encryption', encryption)
             new_password = request.form.get('smtp_password', '')
+            set_setting('church_name', church_name)
+            set_setting('church_address', church_address)
+            set_setting('mail_from', mail_from)
+            set_setting('smtp_host', smtp_host)
+            set_setting('smtp_port', smtp_port)
+            set_setting('smtp_username', smtp_username)
+            set_setting('smtp_encryption', encryption)
             if new_password.strip():
                 set_setting('smtp_password', new_password)
             elif request.form.get('clear_smtp_password') == '1':
                 set_setting('smtp_password', '')
-
-            audit('update', 'settings')
+            after_keys = {
+                'church_name': church_name,
+                'church_address': church_address,
+                'mail_from': mail_from,
+                'smtp_host': smtp_host,
+                'smtp_port': smtp_port,
+                'smtp_username': smtp_username,
+                'smtp_encryption': encryption,
+            }
+            changes = [(key, before.get(key, ''), new_val) for key, new_val in after_keys.items()]
+            if new_password.strip() or request.form.get('clear_smtp_password') == '1':
+                changes.append(('smtp_password', '(hidden)' if before.get('smtp_password') else '(empty)', '(updated)' if new_password.strip() else '(cleared)'))
+            audit('update', 'settings', summary='website settings', reason=reason, changes=changes)
             db.session.commit()
             flash('Website settings saved.', 'success')
             return redirect(url_for('settings_page'))
@@ -2253,11 +2511,22 @@ def create_app(test_config=None):
                     for existing in db.session.scalars(db.select(FiscalYear)).all():
                         if start <= existing.end_date and end >= existing.start_date: raise ValueError('Fiscal years cannot overlap.')
                     year = FiscalYear(name=request.form['name'].strip(), start_date=start, end_date=end)
-                    db.session.add(year); db.session.flush(); audit('create', 'fiscal_year', year.id); db.session.commit()
+                    db.session.add(year); db.session.flush(); audit('create', 'fiscal_year', year.id, summary=year.name); db.session.commit()
                 except (ValueError, KeyError) as exc: flash(str(exc), 'error')
             elif action == 'toggle':
-                year = db.get_or_404(FiscalYear, request.form.get('year_id', type=int)); year.is_open = not year.is_open
-                audit('status', 'fiscal_year', year.id, str(year.is_open)); db.session.commit()
+                try:
+                    reason = require_audit_reason()
+                except ValueError as exc:
+                    flash(str(exc), 'error')
+                    return redirect(url_for('fiscal'))
+                year = db.get_or_404(FiscalYear, request.form.get('year_id', type=int))
+                old = year.is_open
+                year.is_open = not year.is_open
+                audit(
+                    'status', 'fiscal_year', year.id, summary=year.name, reason=reason,
+                    changes=[('Open', old, year.is_open)],
+                )
+                db.session.commit()
             return redirect(url_for('fiscal'))
         years = db.session.scalars(db.select(FiscalYear).order_by(FiscalYear.start_date.desc())).all()
         return render_template('fiscal.html', years=years)
@@ -2339,170 +2608,11 @@ def create_app(test_config=None):
                 flash('Feedback sent.', 'success'); return redirect(url_for('help_page'))
         return render_template('help.html')
 
-    def _can_manage_managed_user(target):
-        if target.id == g.user.id:
-            return False
-        if target.role == 'Super Admin' and g.user.role != 'Super Admin':
-            return False
-        return True
-
-    def _managed_account_roles():
-        if g.user.role == 'Super Admin':
-            return list(ROLES)
-        return [role for role in ROLES if role != 'Super Admin']
-
-    @app.route('/approvals', methods=['GET', 'POST'])
-    @require('approvals')
-    def approvals():
-        if request.method == 'POST':
-            signup_id = request.form.get('signup_id', type=int)
-            action = (request.form.get('action') or '').strip()
-            signup_req = db.get_or_404(SignupRequest, signup_id)
-            if signup_req.status != 'pending':
-                flash('That signup request was already reviewed.', 'error')
-                return redirect(url_for('approvals'))
-            if action not in ('approve', 'deny'):
-                abort(400)
-            if action == 'approve':
-                if signup_req.requested_role not in SIGNUP_ROLES:
-                    flash('This request has an invalid role and cannot be approved.', 'error')
-                    return redirect(url_for('approvals'))
-                if db.session.scalar(db.select(User).where(db.func.lower(User.email) == signup_req.email.lower())):
-                    flash('A user with that email already exists. Deny this request or resolve the conflict.', 'error')
-                    return redirect(url_for('approvals'))
-                user = User(
-                    first_name=signup_req.first_name,
-                    last_name=signup_req.last_name,
-                    email=signup_req.email.lower(),
-                    phone='',
-                    role=signup_req.requested_role,
-                    password_hash=signup_req.password_hash,
-                    active=True,
-                )
-                db.session.add(user)
-                db.session.flush()
-                signup_req.status = 'approved'
-                signup_req.reviewed_at = utcnow()
-                signup_req.reviewed_by_id = g.user.id
-                audit('approve', 'signup', signup_req.id, summary=f'{signup_req.email} as {signup_req.requested_role}')
-                db.session.commit()
-                try:
-                    notify_signup_decision(signup_req, approved=True, reviewer=g.user)
-                except Exception:
-                    current_app.logger.exception('Failed to notify signup approval')
-                    flash('Account approved, but the notification email could not be sent.', 'error')
-                    return redirect(url_for('approvals'))
-                flash(f'Approved {signup_req.name}. A notice was sent from your email address.', 'success')
-            else:
-                signup_req.status = 'denied'
-                signup_req.reviewed_at = utcnow()
-                signup_req.reviewed_by_id = g.user.id
-                audit('deny', 'signup', signup_req.id, summary=signup_req.email)
-                db.session.commit()
-                try:
-                    notify_signup_decision(signup_req, approved=False, reviewer=g.user)
-                except Exception:
-                    current_app.logger.exception('Failed to notify signup denial')
-                    flash('Request denied, but the notification email could not be sent.', 'error')
-                    return redirect(url_for('approvals'))
-                flash(f'Denied {signup_req.name}. A notice was sent from your email address.', 'success')
-            return redirect(url_for('approvals'))
-        pending = db.session.scalars(
-            db.select(SignupRequest).where(SignupRequest.status == 'pending').order_by(SignupRequest.created_at.asc())
-        ).all()
-        recent = db.session.scalars(
-            db.select(SignupRequest).where(SignupRequest.status != 'pending').order_by(SignupRequest.reviewed_at.desc()).limit(25)
-        ).all()
-        accounts = db.session.scalars(db.select(User).order_by(User.last_name, User.first_name)).all()
-        return render_template('approvals.html', pending=pending, recent=recent, accounts=accounts)
-
-    @app.route('/approvals/users/<int:user_id>/edit', methods=['GET', 'POST'])
-    @require('approvals')
-    def approvals_user_edit(user_id):
-        user = db.get_or_404(User, user_id)
-        if user.role == 'Super Admin' and g.user.role != 'Super Admin':
-            abort(403)
-        roles = _managed_account_roles()
-        if request.method == 'POST':
-            first = request.form.get('first_name', '').strip()
-            last = request.form.get('last_name', '').strip()
-            email = request.form.get('email', '').strip().lower()
-            username = request.form.get('username', '').strip().lower() or None
-            phone = request.form.get('phone', '').strip()
-            role = request.form.get('role', '')
-            active = request.form.get('active') == '1'
-            other = db.session.scalar(db.select(User).where(User.email == email, User.id != user.id))
-            other_username = (
-                db.session.scalar(db.select(User).where(User.username == username, User.id != user.id))
-                if username else None
-            )
-            if not first or not last or not valid_email(email) or role not in roles:
-                flash('First name, last name, valid email, and role are required.', 'error')
-            elif other:
-                flash('That email address is already used.', 'error')
-            elif other_username:
-                flash('That username is already used.', 'error')
-            elif role == 'Super Admin' and g.user.role != 'Super Admin':
-                abort(403)
-            elif (
-                user.role == 'Super Admin'
-                and (role != 'Super Admin' or not active)
-                and db.session.scalar(db.select(db.func.count(User.id)).filter_by(role='Super Admin', active=True)) <= 1
-                and user.active
-            ):
-                flash('The last active Super Admin cannot be deactivated or demoted.', 'error')
-            elif user.id == g.user.id and not active:
-                flash('You cannot deactivate your own account.', 'error')
-            else:
-                user.first_name = first
-                user.last_name = last
-                user.email = email
-                user.username = username
-                user.phone = phone or ''
-                user.role = role
-                if user.id != g.user.id:
-                    user.active = active
-                password = request.form.get('password', '')
-                if password:
-                    if len(password) < 8:
-                        flash('A replacement password must contain at least 8 characters.', 'error')
-                        return render_template('approvals_user_edit.html', user=user, roles=roles)
-                    user.password_hash = hash_password(password)
-                audit('update', 'user', user.id, summary='user management')
-                db.session.commit()
-                flash('Account updated.', 'success')
-                return redirect(url_for('approvals'))
-        return render_template('approvals_user_edit.html', user=user, roles=roles)
-
-    @app.post('/approvals/users/<int:user_id>/delete')
-    @require('approvals')
-    def approvals_user_delete(user_id):
-        user = db.get_or_404(User, user_id)
-        if not _can_manage_managed_user(user):
-            abort(403)
-        if user.role == 'Super Admin' and user.active:
-            count = db.session.scalar(db.select(db.func.count(User.id)).filter_by(role='Super Admin', active=True))
-            if count <= 1:
-                flash('The last active Super Admin cannot be deleted.', 'error')
-                return redirect(url_for('approvals'))
-        gift_count = db.session.scalar(db.select(db.func.count(Gift.id)).filter_by(entered_by_id=user.id)) or 0
-        feedback_count = db.session.scalar(db.select(db.func.count(Feedback.id)).filter_by(user_id=user.id)) or 0
-        if gift_count or feedback_count:
-            flash(
-                f'Cannot delete {user.name}: this account still has recorded gifts or feedback. '
-                'Deactivate the account instead.',
-                'error',
-            )
-            return redirect(url_for('approvals'))
-        db.session.execute(db.update(Audit).where(Audit.user_id == user.id).values(user_id=None))
-        db.session.execute(
-            db.update(SignupRequest).where(SignupRequest.reviewed_by_id == user.id).values(reviewed_by_id=None)
-        )
-        audit('delete', 'user', user.id, summary=user.email)
-        db.session.delete(user)
-        db.session.commit()
-        flash(f'Deleted account {user.email}.', 'success')
-        return redirect(url_for('approvals'))
+    @app.route('/approvals')
+    @require('users')
+    def approvals_redirect():
+        """Legacy User Management URL now lives under Administration → Users."""
+        return redirect(url_for('users'))
 
     @app.route('/admin/feedback', methods=['GET', 'POST'])
     @require('feedback_review')
@@ -2511,7 +2621,18 @@ def create_app(test_config=None):
             item = db.get_or_404(Feedback, request.form.get('feedback_id', type=int))
             status = request.form.get('status', '')
             if status not in ('new', 'under review', 'resolved', 'declined'): abort(400)
-            item.status = status; audit('status', 'feedback', item.id, status); db.session.commit()
+            try:
+                reason = require_audit_reason()
+            except ValueError as exc:
+                flash(str(exc), 'error')
+                return redirect(url_for('feedback_review'))
+            old = item.status
+            item.status = status
+            audit(
+                'status', 'feedback', item.id, summary=item.subject, reason=reason,
+                changes=[('Status', old, status)],
+            )
+            db.session.commit()
             return redirect(url_for('feedback_review'))
         items = db.session.scalars(db.select(Feedback).order_by(Feedback.created_at.desc()).limit(200)).all()
         return render_template('feedback_review.html', items=items)
@@ -2522,7 +2643,7 @@ def create_app(test_config=None):
         events = db.session.scalars(db.select(Audit).order_by(Audit.timestamp.desc()).limit(200)).all()
         user_ids = {event.user_id for event in events if event.user_id}
         names = {user_id: db.session.get(User, user_id).name for user_id in user_ids if db.session.get(User, user_id)}
-        return render_template('audit.html', events=events, names=names)
+        return render_template('audit.html', events=events, names=names, format_eastern=format_eastern)
 
     @app.cli.command('init-db')
     def init_db():

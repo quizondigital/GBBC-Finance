@@ -48,3 +48,7 @@ details p{margin:10px 0}details pre{overflow:auto;background:#f3f6f3;border:1px 
 .checkbox-row{display:flex;align-items:center;gap:8px;font-size:14px}
 .checkbox-row input{width:auto}
 button:disabled{opacity:.55;cursor:not-allowed}
+
+.audit-details pre{margin:0;white-space:pre-wrap;font:inherit;color:#3a4d44}
+.approval-form{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.approval-form input[name=audit_reason]{min-width:220px;flex:1}

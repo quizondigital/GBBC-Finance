@@ -48,6 +48,7 @@
     <label>ZIP code
       <input name="zip_code" value="{{ person.zip_code if person else '' }}" inputmode="numeric" placeholder="08812" autocomplete="postal-code" pattern="\d{5}(-\d{4})?">
     </label>
+    {% if person %}{% include '_audit_reason.html' %}{% endif %}
     <div class="form-actions">
       <a class="button secondary" href="{{ url_for('people') }}">Cancel</a>
       <button class="button" type="submit">Save person</button>

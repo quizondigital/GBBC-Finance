@@ -64,6 +64,7 @@
       {% if smtp_password_set %}
       <label class="checkbox-row"><input type="checkbox" name="clear_smtp_password" value="1"> Clear saved SMTP password</label>
       {% endif %}
+      {% with full_width=false %}{% include '_audit_reason.html' %}{% endwith %}
       <button class="button" type="submit">Save settings</button>
     </form>
   </section>

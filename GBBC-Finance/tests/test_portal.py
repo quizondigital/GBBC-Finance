@@ -78,6 +78,7 @@ def test_person_structured_address_and_letter(client):
         'email': 'ada@example.org', 'phone': '555-0100',
         'address_line1': '170 Greenbrook Rd.', 'address_line2': 'Attn: Finance',
         'city': 'Green Brook', 'state': 'nj', 'zip_code': '08812',
+        'audit_reason': 'Corrected mailing address',
     }
     assert b'Person saved' in client.post('/people/1/edit', data=data, follow_redirects=True).data
     with client.application.app_context():
@@ -153,11 +154,12 @@ def test_login_limit(client):
 
 def test_all_primary_pages_render(client):
     login(client, 'sally@example.org')
-    paths = ['/', '/people', '/people/new', '/people/1/edit', '/people/import', '/contributions', '/contributions/import', '/contributions/new', '/reports', '/admin/users', '/admin/users/1/edit', '/admin/roles', '/admin/fiscal', '/admin/settings', '/admin/feedback', '/admin/audit', '/help', '/approvals']
+    paths = ['/', '/people', '/people/new', '/people/1/edit', '/people/import', '/contributions', '/contributions/import', '/contributions/new', '/reports', '/admin/users', '/admin/users/1/edit', '/admin/roles', '/admin/fiscal', '/admin/settings', '/admin/feedback', '/admin/audit', '/help']
     for path in paths:
         response = client.get(path)
         assert response.status_code == 200, path
         assert b'GBBC Finance' in response.data, path
+    assert client.get('/approvals').status_code == 302
 
 def test_signup_and_admin_approval_flow(client):
     login_page = client.get('/login')
@@ -205,12 +207,13 @@ def test_signup_and_admin_approval_flow(client):
     blocked = client.post('/login', data={'csrf_token': token(client), 'email': 'pat@example.org', 'password': 'Secure1!'}, follow_redirects=True)
     assert b'waiting for administrator approval' in blocked.data
     login(client, 'sally@example.org')
-    approvals = client.get('/approvals')
-    assert approvals.status_code == 200
-    assert b'Pat Applicant' in approvals.data
-    assert b'User Management' in client.get('/people').data
-    approved = client.post('/approvals', data={
-        'csrf_token': token(client), 'signup_id': '1', 'action': 'approve',
+    users_page = client.get('/admin/users')
+    assert users_page.status_code == 200
+    assert b'Pat Applicant' in users_page.data
+    assert b'Pending signup requests' in users_page.data
+    assert b'User Management</span>' not in client.get('/people').data
+    approved = client.post('/admin/users', data={
+        'csrf_token': token(client), 'signup_id': '1', 'action': 'approve', 'audit_reason': 'Verified church member',
     }, follow_redirects=True)
     assert b'Approved Pat Applicant' in approved.data
     client.post('/logout', data={'csrf_token': token(client)})
@@ -222,11 +225,11 @@ def test_signup_and_admin_approval_flow(client):
     assert client.get('/people').status_code == 200
     assert client.get('/help').status_code == 200
     assert client.get('/contributions').status_code == 403
-    assert client.get('/approvals').status_code == 403
+    assert client.get('/admin/users').status_code == 403
     assert b'Overview</span>' not in client.get('/people').data
-    assert b'User Management</span>' not in client.get('/people').data
+    assert b'Administration</span>' not in client.get('/people').data
 
-def test_finance_staff_signup_role_cannot_access_approvals(client):
+def test_finance_staff_signup_role_cannot_access_users_admin(client):
     client.get('/signup')
     client.post('/signup', data={
         'csrf_token': token(client),
@@ -237,7 +240,9 @@ def test_finance_staff_signup_role_cannot_access_approvals(client):
     with client.application.app_context():
         req = db.session.scalar(db.select(SignupRequest).filter_by(email='fin@example.org'))
         req_id = req.id
-    client.post('/approvals', data={'csrf_token': token(client), 'signup_id': str(req_id), 'action': 'approve'}, follow_redirects=True)
+    client.post('/admin/users', data={
+        'csrf_token': token(client), 'signup_id': str(req_id), 'action': 'approve', 'audit_reason': 'Finance hire',
+    }, follow_redirects=True)
     client.post('/logout', data={'csrf_token': token(client)})
     client.get('/login')
     login_resp = client.post('/login', data={'csrf_token': token(client), 'email': 'fin@example.org', 'password': 'Secure1!'}, follow_redirects=True)
@@ -253,11 +258,11 @@ def test_finance_staff_signup_role_cannot_access_approvals(client):
     assert client.get('/reports/statements/1.pdf').status_code == 200
     assert client.get('/utilities').status_code == 200
     assert client.get('/help').status_code == 200
-    assert client.get('/approvals').status_code == 403
+    assert client.get('/admin/users').status_code == 403
     home = client.get('/').data
     assert b'Reports</span>' in home
     assert b'Utilities</span>' in home
-    assert b'User Management</span>' not in home
+    assert b'Administration</span>' not in home
 
 def test_system_administrator_signup_role_can_approve(client):
     client.get('/signup')
@@ -277,17 +282,20 @@ def test_system_administrator_signup_role_can_approve(client):
         admin_req = db.session.scalar(db.select(SignupRequest).filter_by(email='ada.admin@example.org'))
         viewer_req = db.session.scalar(db.select(SignupRequest).filter_by(email='viewer2@example.org'))
         admin_id, viewer_id = admin_req.id, viewer_req.id
-    client.post('/approvals', data={'csrf_token': token(client), 'signup_id': str(admin_id), 'action': 'approve'}, follow_redirects=True)
+    client.post('/admin/users', data={
+        'csrf_token': token(client), 'signup_id': str(admin_id), 'action': 'approve', 'audit_reason': 'IT staff',
+    }, follow_redirects=True)
     client.post('/logout', data={'csrf_token': token(client)})
     client.get('/login')
     client.post('/login', data={'csrf_token': token(client), 'email': 'ada.admin@example.org', 'password': 'Secure1!'}, follow_redirects=True)
-    page = client.get('/approvals')
+    page = client.get('/admin/users')
     assert page.status_code == 200
-    assert b'User Management' in page.data
-    assert b'Existing accounts' in page.data
+    assert b'Pending signup requests' in page.data
     assert b'Sally Admin' in page.data
     assert b'password_hash' not in page.data
-    denied = client.post('/approvals', data={'csrf_token': token(client), 'signup_id': str(viewer_id), 'action': 'deny'}, follow_redirects=True)
+    denied = client.post('/admin/users', data={
+        'csrf_token': token(client), 'signup_id': str(viewer_id), 'action': 'deny', 'audit_reason': 'Not needed',
+    }, follow_redirects=True)
     assert b'Denied Vie Wer' in denied.data
     with client.application.app_context():
         assert db.session.scalar(db.select(SignupRequest).filter_by(email='viewer2@example.org')).status == 'denied'
@@ -360,7 +368,7 @@ def test_signup_sends_email_when_smtp_configured(client, monkeypatch):
     assert send[1] == 'mail.tester@example.org'
     assert 'signup request received' in send[2].lower()
 
-def test_user_management_edit_and_delete_accounts(client):
+def test_admin_users_edit_requires_reason_and_logs_changes(client):
     client.get('/signup')
     client.post('/signup', data={
         'csrf_token': token(client),
@@ -371,33 +379,55 @@ def test_user_management_edit_and_delete_accounts(client):
     with client.application.app_context():
         req = db.session.scalar(db.select(SignupRequest).filter_by(email='viewer3@example.org'))
         req_id = req.id
-    client.post('/approvals', data={'csrf_token': token(client), 'signup_id': str(req_id), 'action': 'approve'}, follow_redirects=True)
+    client.post('/admin/users', data={
+        'csrf_token': token(client), 'signup_id': str(req_id), 'action': 'approve', 'audit_reason': 'Approved viewer',
+    }, follow_redirects=True)
     with client.application.app_context():
         account = db.session.scalar(db.select(User).filter_by(email='viewer3@example.org'))
         account_id = account.id
         password_hash = account.password_hash
-    edit_page = client.get(f'/approvals/users/{account_id}/edit')
+    edit_page = client.get(f'/admin/users/{account_id}/edit')
     assert edit_page.status_code == 200
-    assert b'Edit account' in edit_page.data
-    assert b'Leave blank to keep current password' in edit_page.data
+    assert b'Edit user' in edit_page.data
+    assert b'Reason for this change' in edit_page.data
     assert b'password_hash' not in edit_page.data
     assert password_hash.encode() not in edit_page.data
-    saved = client.post(f'/approvals/users/{account_id}/edit', data={
+    missing_reason = client.post(f'/admin/users/{account_id}/edit', data={
         'csrf_token': token(client),
         'first_name': 'View', 'last_name': 'Erson', 'email': 'viewer3@example.org',
-        'username': 'viewer3', 'phone': '555-0199', 'role': 'People Viewer', 'active': '1', 'password': '',
+        'username': 'viewer3', 'phone': '555-0199', 'role': 'People Viewer', 'password': '',
     }, follow_redirects=True)
-    assert b'Account updated' in saved.data
+    assert b'reason for this change is required' in missing_reason.data.lower()
+    saved = client.post(f'/admin/users/{account_id}/edit', data={
+        'csrf_token': token(client),
+        'first_name': 'View', 'last_name': 'Erson', 'email': 'viewer3@example.org',
+        'username': 'viewer3', 'phone': '555-0199', 'role': 'People Viewer', 'password': '',
+        'audit_reason': 'Corrected display name',
+    }, follow_redirects=True)
+    assert b'User updated' in saved.data
     assert b'View Erson' in saved.data
+    audit_page = client.get('/admin/audit')
+    assert audit_page.status_code == 200
+    assert b'Time (Eastern)' in audit_page.data
+    assert b'Corrected display name' in audit_page.data
+    assert 'First name: Vie → View'.encode() in audit_page.data
     with client.application.app_context():
         account = db.session.get(User, account_id)
         assert account.first_name == 'View' and account.phone == '555-0199' and account.username == 'viewer3'
-    deleted = client.post(f'/approvals/users/{account_id}/delete', data={'csrf_token': token(client)}, follow_redirects=True)
-    assert b'Deleted account viewer3@example.org' in deleted.data
-    with client.application.app_context():
-        assert db.session.get(User, account_id) is None
-    # Cannot delete own account
-    assert client.post('/approvals/users/1/delete', data={'csrf_token': token(client)}).status_code == 403
+
+def test_contribution_create_appears_in_audit_with_details(client):
+    login(client, 'sally@example.org')
+    response = client.post('/contributions/new', data={
+        'csrf_token': token(client),
+        'person_id': '1', 'fiscal_year_id': '1', 'date': '2026-09-10',
+        'amount': '42.50', 'fund_id': '1', 'method': 'Check', 'reference': '1001', 'note': 'Sunday gift',
+    }, follow_redirects=True)
+    assert b'Contribution saved' in response.data
+    audit_page = client.get('/admin/audit').data
+    assert b'Ada Member' in audit_page
+    assert b'General Fund' in audit_page
+    assert b'42.50' in audit_page
+    assert b'Sunday gift' in audit_page
 
 def test_contribution_csv_import(client):
     login(client, 'sally@example.org')
@@ -701,9 +731,9 @@ def test_person_delete_from_list(client):
         db.session.add(Gift(person_id=1, fiscal_year_id=1, fund_id=1, date=date(2026,9,1), amount=10, method='Cash', entered_by_id=1))
         db.session.commit()
         person_id = db.session.scalar(db.select(Person.id).filter_by(last_name='Visitor'))
-    blocked = client.post('/people/1/delete', data={'csrf_token': token(client)}, follow_redirects=True)
+    blocked = client.post('/people/1/delete', data={'csrf_token': token(client), 'audit_reason': 'Cleanup'}, follow_redirects=True)
     assert b'Cannot delete a person who has contribution records' in blocked.data
-    deleted = client.post(f'/people/{person_id}/delete', data={'csrf_token': token(client)}, follow_redirects=True)
+    deleted = client.post(f'/people/{person_id}/delete', data={'csrf_token': token(client), 'audit_reason': 'Duplicate record'}, follow_redirects=True)
     assert b'Ben Visitor deleted.' in deleted.data
     with client.application.app_context():
         assert db.session.get(Person, person_id) is None
@@ -715,7 +745,7 @@ def test_gift_delete_from_list(client):
         db.session.commit()
     listing = client.get('/contributions').data
     assert b'Delete' in listing
-    deleted = client.post('/contributions/1/delete', data={'csrf_token': token(client)}, follow_redirects=True)
+    deleted = client.post('/contributions/1/delete', data={'csrf_token': token(client), 'audit_reason': 'Entered twice'}, follow_redirects=True)
     assert b'Contribution deleted.' in deleted.data
     with client.application.app_context():
         assert db.session.get(Gift, 1) is None
@@ -724,6 +754,9 @@ def test_reconciliation_is_audited_and_role_limited(client):
     login(client, 'sally@example.org')
     with client.application.app_context():
         db.session.add(Gift(person_id=1, fiscal_year_id=1, fund_id=1, date=date(2026,9,1), amount=25, method='Check', entered_by_id=1)); db.session.commit()
-    response = client.post('/contributions/1/reconcile', data={'csrf_token':token(client)}, follow_redirects=True)
+    response = client.post('/contributions/1/reconcile', data={'csrf_token':token(client), 'audit_reason': 'Matched bank deposit'}, follow_redirects=True)
     assert b'Reconciliation status updated' in response.data
     with client.application.app_context(): assert db.session.get(Gift,1).reconciled is True
+    audit_page = client.get('/admin/audit').data
+    assert b'Matched bank deposit' in audit_page
+    assert 'Reconciled: No → Yes'.encode() in audit_page

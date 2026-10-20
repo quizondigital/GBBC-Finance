@@ -1,1 +1,147 @@
-{% extends 'base.html' %}{% block content %}<div class="heading"><div><p class="eyebrow">Administration</p><h1>Users</h1><p class="muted">Create accounts with the contact details and role required for access.</p></div></div>{% include 'admin_nav.html' %}<div class="admin-grid"><section class="card form-card"><h2>Create user</h2><form method="post" class="form-stack"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><label>First name <em>required</em><input name="first_name" required></label><label>Last name <em>required</em><input name="last_name" required></label><label>Email address <em>required</em><input name="email" type="email" required></label><label>Username (optional)<input name="username"></label><label>Phone number <em>required</em><input name="phone" type="tel" required></label><label>Role <em>required</em><select name="role" required><option value="">Select a role</option>{% for role in roles if current_user.role == 'Super Admin' or role != 'Super Admin' %}<option>{{ role }}</option>{% endfor %}</select></label><label>Initial password <em>required</em><input name="password" type="password" minlength="12" required></label><button class="button" type="submit">Create user</button></form></section><section class="card"><div class="card-head"><h2>Current users</h2><p>{{ users|length }} accounts</p></div><div class="user-list">{% for user in users %}<div class="user-row"><span class="circle">{{ user.first_name[0] }}{{ user.last_name[0] }}</span><span><strong>{{ user.name }}</strong><small>{{ user.email }} · {{ user.phone }} · {{ user.role }}</small></span><span class="pill">{{ 'Active' if user.active else 'Inactive' }}</span><a href="{{ url_for('user_edit', user_id=user.id) }}">Edit</a>{% if user.id != current_user.id %}<form method="post" action="{{ url_for('user_toggle', user_id=user.id) }}"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="text-button" type="submit">{{ 'Deactivate' if user.active else 'Activate' }}</button></form>{% endif %}</div>{% endfor %}</div></section></div>{% endblock %}
+{% extends 'base.html' %}
+{% block content %}
+<div class="heading">
+  <div>
+    <p class="eyebrow">Administration</p>
+    <h1>Users</h1>
+    <p class="muted">Create and manage portal accounts, and review signup requests.</p>
+  </div>
+</div>
+{% include 'admin_nav.html' %}
+
+<section class="card" style="margin-bottom:20px">
+  <div class="card-head">
+    <h2>Pending signup requests</h2>
+    <p>{{ pending|length }} waiting for a decision</p>
+  </div>
+  {% if pending %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Requested</th>
+          <th>Name</th>
+          <th>Email</th>
+          <th>Role</th>
+          <th>Reason</th>
+          <th>Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in pending %}
+        <tr>
+          <td>{{ item.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+          <td><strong>{{ item.name }}</strong></td>
+          <td>{{ item.email }}</td>
+          <td><span class="pill">{{ item.requested_role }}</span></td>
+          <td colspan="2">
+            <div class="approval-actions">
+              <form method="post" class="inline approval-form">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <input type="hidden" name="signup_id" value="{{ item.id }}">
+                <input name="audit_reason" required maxlength="255" placeholder="Reason for decision" aria-label="Reason for {{ item.name }}">
+                <button class="button" type="submit" name="action" value="approve">Approve</button>
+                <button class="button secondary" type="submit" name="action" value="deny">Deny</button>
+              </form>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty">No pending signup requests.</p>
+  {% endif %}
+</section>
+
+{% if recent %}
+<section class="card" style="margin-bottom:20px">
+  <div class="card-head">
+    <h2>Recently reviewed</h2>
+    <p>Latest approval and denial decisions</p>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Reviewed</th>
+          <th>Name</th>
+          <th>Email</th>
+          <th>Role</th>
+          <th>Decision</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in recent %}
+        <tr>
+          <td>{{ item.reviewed_at.strftime('%Y-%m-%d %H:%M') if item.reviewed_at else '—' }}</td>
+          <td>{{ item.name }}</td>
+          <td>{{ item.email }}</td>
+          <td>{{ item.requested_role }}</td>
+          <td><span class="pill">{{ item.status|capitalize }}</span></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+
+<div class="admin-grid">
+  <section class="card form-card">
+    <h2>Create user</h2>
+    <form method="post" class="form-stack">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label>First name <em>required</em><input name="first_name" required></label>
+      <label>Last name <em>required</em><input name="last_name" required></label>
+      <label>Email address <em>required</em><input name="email" type="email" required></label>
+      <label>Username (optional)<input name="username"></label>
+      <label>Phone number <em>required</em><input name="phone" type="tel" required></label>
+      <label>Role <em>required</em>
+        <select name="role" required>
+          <option value="">Select a role</option>
+          {% for role in roles if current_user.role == 'Super Admin' or role != 'Super Admin' %}
+          <option>{{ role }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Initial password <em>required</em><input name="password" type="password" minlength="12" required></label>
+      <button class="button" type="submit">Create user</button>
+    </form>
+  </section>
+  <section class="card">
+    <div class="card-head">
+      <h2>Current users</h2>
+      <p>{{ users|length }} accounts</p>
+    </div>
+    <div class="user-list">
+      {% for user in users %}
+      <div class="user-row">
+        <span class="circle">{{ user.first_name[0] }}{{ user.last_name[0] }}</span>
+        <span><strong>{{ user.name }}</strong><small>{{ user.email }} · {{ user.phone }} · {{ user.role }}</small></span>
+        <span class="pill">{{ 'Active' if user.active else 'Inactive' }}</span>
+        <a href="{{ url_for('user_edit', user_id=user.id) }}">Edit</a>
+        {% if user.id != current_user.id %}
+        <form method="post" action="{{ url_for('user_toggle', user_id=user.id) }}" class="inline" onsubmit="return window.promptAuditReason(this);">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <input type="hidden" name="audit_reason" value="">
+          <button class="text-button" type="submit">{{ 'Deactivate' if user.active else 'Activate' }}</button>
+        </form>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+</div>
+<script>
+window.promptAuditReason = function (form) {
+  var reason = window.prompt('Reason for this change:');
+  if (!reason || !reason.trim()) {
+    return false;
+  }
+  form.audit_reason.value = reason.trim();
+  return true;
+};
+</script>
+{% endblock %}

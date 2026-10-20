@@ -55,7 +55,7 @@
           {% if can('people_write') %}
           <td>
             <a href="{{ url_for('person_edit', person_id=person.id) }}">Edit</a>
-            <form class="inline" method="post" action="{{ url_for('person_delete', person_id=person.id) }}" onsubmit="return confirm('Delete {{ person.name }}? This cannot be undone.')"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><button class="text-button danger" type="submit">Delete</button></form>
+            <form class="inline" method="post" action="{{ url_for('person_delete', person_id=person.id) }}" onsubmit="if(!confirm('Delete {{ person.name }}? This cannot be undone.')) return false; return window.promptAuditReason(this);"><input type="hidden" name="csrf_token" value="{{ csrf_token() }}"><input type="hidden" name="audit_reason" value=""><button class="text-button danger" type="submit">Delete</button></form>
           </td>
           {% endif %}
         </tr>
