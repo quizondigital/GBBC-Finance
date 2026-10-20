@@ -255,6 +255,29 @@ def _write_mail_outbox(message, outbox_name):
     path.write_text(message, encoding='utf-8')
     return path
 
+def _smtp_help_message(exc, config):
+    text = str(exc).strip() or exc.__class__.__name__
+    host = (config.get('host') or '').lower()
+    tips = []
+    if 'gmail.com' in host or 'googlemail.com' in host:
+        tips.append(
+            'For Gmail, use an App Password (Google Account → Security → 2-Step Verification → App passwords), not your normal login password.'
+        )
+        tips.append('Recommended settings: smtp.gmail.com, port 587, STARTTLS, and From address = your Gmail address.')
+        if config.get('from_addr') and config.get('username'):
+            from_l = config['from_addr'].lower()
+            user_l = config['username'].lower()
+            if from_l != user_l and not from_l.endswith('@gmail.com') and not from_l.endswith('@googlemail.com'):
+                tips.append(
+                    f'Gmail usually rejects From addresses that are not the signed-in account. '
+                    f'Set From to {config["username"]} (or send as that Gmail address).'
+                )
+    if 'connection unexpectedly closed' in text.lower():
+        tips.append('Try port 587 with STARTTLS if SSL on 465 keeps dropping.')
+    if tips:
+        return f'{text} — ' + ' '.join(tips)
+    return text
+
 def send_portal_email(to_addr, subject, body, from_addr=None, outbox_name='mail'):
     """Send email via SMTP when configured; otherwise write to instance/mail_outbox."""
     import smtplib
@@ -262,6 +285,14 @@ def send_portal_email(to_addr, subject, body, from_addr=None, outbox_name='mail'
 
     config = portal_mail_config()
     from_addr = (from_addr or config['from_addr'] or 'noreply@greenbrookchurch.org').strip()
+    # Gmail requires the From address to match the authenticated mailbox unless "Send mail as" is set up.
+    host = (config['host'] or '').lower()
+    username = (config['username'] or '').strip()
+    if username and ('gmail.com' in host or 'googlemail.com' in host):
+        user_l = username.lower()
+        from_l = from_addr.lower()
+        if from_l != user_l and not from_l.endswith('@gmail.com') and not from_l.endswith('@googlemail.com'):
+            from_addr = username
     message = f'From: {from_addr}\nTo: {to_addr}\nSubject: {subject}\n\n{body}'
     if not config['host']:
         _write_mail_outbox(message, outbox_name)
@@ -271,22 +302,28 @@ def send_portal_email(to_addr, subject, body, from_addr=None, outbox_name='mail'
     email_msg['From'] = from_addr
     email_msg['To'] = to_addr
     email_msg['Subject'] = subject
+    if config['from_addr'] and config['from_addr'].strip().lower() != from_addr.lower():
+        email_msg['Reply-To'] = config['from_addr'].strip()
     email_msg.set_content(body)
     try:
         if config['encryption'] == 'ssl':
-            smtp = smtplib.SMTP_SSL(config['host'], config['port'], timeout=20)
+            context = smtplib.SMTP_SSL(config['host'], config['port'], timeout=30)
         else:
-            smtp = smtplib.SMTP(config['host'], config['port'], timeout=20)
-        with smtp:
+            context = smtplib.SMTP(config['host'], config['port'], timeout=30)
+        with context as smtp:
+            smtp.ehlo()
             if config['encryption'] == 'starttls':
                 smtp.starttls()
-            if config['username']:
-                smtp.login(config['username'], config['password'])
+                smtp.ehlo()
+            if username:
+                if not config['password']:
+                    raise RuntimeError('SMTP password is missing. Save an App Password in Website settings.')
+                smtp.login(username, config['password'])
             smtp.send_message(email_msg)
         return 'sent'
-    except Exception:
+    except Exception as exc:
         _write_mail_outbox(message, f'{outbox_name}_failed')
-        raise
+        raise RuntimeError(_smtp_help_message(exc, {**config, 'from_addr': from_addr})) from exc
 
 def notify_signup_received(signup):
     """Acknowledge that a signup request was received and is awaiting approval."""
@@ -2132,7 +2169,14 @@ def create_app(test_config=None):
                         ),
                         outbox_name='mail_test',
                     )
-                    flash(f'Test email sent to {to_addr}.', 'success')
+                    if to_addr.endswith('@example.org') or to_addr.endswith('@example.com'):
+                        flash(
+                            f'Test email was accepted by SMTP for {to_addr}, but @example.org is not a real inbox. '
+                            f'Send the next test to your Gmail address.',
+                            'success',
+                        )
+                    else:
+                        flash(f'Test email sent to {to_addr}.', 'success')
                 except Exception as exc:
                     current_app.logger.exception('Mail test failed')
                     flash(f'Test email failed: {exc}', 'error')
