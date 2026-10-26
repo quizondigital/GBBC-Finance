@@ -4,18 +4,30 @@
   <div>
     <p class="eyebrow">Giving records</p>
     <h1>{{ 'Edit contribution' if gift else 'Record contribution' }}</h1>
-    <p class="muted">Select the contributor and enter the gift details.</p>
+    <p class="muted">Search for the contributor and enter the gift details.</p>
   </div>
 </div>
 <section class="card form-card">
-  <form method="post" class="form-grid">
+  <form method="post" class="form-grid" id="gift-form">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-    <label>Contributor <em>required</em>
-      <select name="person_id" required>
-        {% for person in people %}
-        <option value="{{ person.id }}" {{ 'selected' if gift and gift.person_id == person.id }}>{{ person.name }}</option>
-        {% endfor %}
-      </select>
+    <label class="person-search-field span-2">Contributor <em>required</em>
+      <input type="hidden" name="person_id" id="person_id" value="{{ selected_person.id if selected_person else '' }}" required>
+      <div class="person-search" data-search-url="{{ people_search_url }}">
+        <input
+          type="search"
+          id="person_search"
+          class="person-search-input"
+          autocomplete="off"
+          spellcheck="false"
+          placeholder="Type at least 2 letters of any name part…"
+          aria-autocomplete="list"
+          aria-controls="person_results"
+          aria-expanded="false"
+          value="{{ selected_person.name if selected_person else '' }}"
+        >
+        <ul id="person_results" class="person-search-results" role="listbox" hidden></ul>
+      </div>
+      <small class="field-hint">Matches first, middle, or last name — anywhere in the name. Keep typing to narrow results.</small>
     </label>
     <label>Fiscal year <em>required</em>
       <select name="fiscal_year_id" required>
@@ -57,4 +69,5 @@
     </div>
   </form>
 </section>
+<script src="{{ url_for('static', filename='person_search.js') }}" defer></script>
 {% endblock %}

@@ -14,7 +14,7 @@ from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 import click
-from flask import Flask, abort, current_app, flash, g, redirect, render_template, request, send_file, session, url_for
+from flask import Flask, abort, current_app, flash, g, jsonify, redirect, render_template, request, send_file, session, url_for
 from flask_sqlalchemy import SQLAlchemy
 from mailmerge import MailMerge
 from openpyxl import Workbook
@@ -1992,6 +1992,44 @@ def create_app(test_config=None):
         content = io.BytesIO((header + example).encode('utf-8'))
         return send_file(content, as_attachment=True, download_name='GBBC_contributions_template.csv', mimetype='text/csv')
 
+    @app.get('/people/search')
+    @require('gift_write')
+    def people_search():
+        """Return active people whose names match the query (min 2 characters).
+
+        Matches any substring across first name, last name, and the combined
+        full name so middle names/initials stored in either field are found.
+        Multi-word queries require every token to appear somewhere in the name.
+        """
+        raw = (request.args.get('q') or '').strip()
+        if len(raw) < 2:
+            return jsonify([])
+        tokens = [token for token in re.split(r'\s+', raw) if token]
+        if not tokens:
+            return jsonify([])
+        full_name = db.func.concat(Person.first_name, ' ', Person.last_name)
+        query = db.select(Person).where(Person.active.is_(True))
+        for token in tokens:
+            pattern = f'%{token}%'
+            query = query.where(
+                db.or_(
+                    Person.first_name.ilike(pattern),
+                    Person.last_name.ilike(pattern),
+                    full_name.ilike(pattern),
+                )
+            )
+        people = db.session.scalars(query.order_by(Person.last_name, Person.first_name).limit(40)).all()
+        return jsonify([
+            {
+                'id': person.id,
+                'name': person.name,
+                'first_name': person.first_name,
+                'last_name': person.last_name,
+                'member_type': person.member_type,
+            }
+            for person in people
+        ])
+
     @app.route('/contributions/new', methods=['GET', 'POST'])
     @require('gift_write')
     def gift_new(): return gift_editor()
@@ -2003,8 +2041,8 @@ def create_app(test_config=None):
     def gift_editor(gift=None):
         years = db.session.scalars(db.select(FiscalYear).order_by(FiscalYear.start_date.desc())).all()
         funds = funds_in_display_order(db.session.scalars(db.select(Fund).filter_by(active=True)).all())
-        persons = db.session.scalars(db.select(Person).filter_by(active=True).order_by(Person.last_name)).all()
         default_fund = next((fund for fund in funds if fund.name == 'General Fund'), funds[0] if funds else None)
+        selected_person = gift.person if gift else None
         if request.method == 'POST':
             try:
                 year = db.session.get(FiscalYear, int(request.form['fiscal_year_id']))
@@ -2012,6 +2050,8 @@ def create_app(test_config=None):
                 fund = db.session.get(Fund, int(request.form['fund_id']))
                 gift_date = date.fromisoformat(request.form['date']); amount = parse_amount(request.form['amount'])
                 if not year or not person or not fund or not year.is_open: raise ValueError('Choose an active person, fund, and open fiscal year.')
+                if not person.active and (gift is None or gift.person_id != person.id):
+                    raise ValueError('Choose an active person, fund, and open fiscal year.')
                 if not (year.start_date <= gift_date <= year.end_date): raise ValueError('Date must fall within the selected fiscal year.')
                 if gift and not gift.fiscal_year.is_open: raise ValueError('Closed-year gifts cannot be edited.')
                 reason = require_audit_reason(required=gift is not None)
@@ -2049,8 +2089,19 @@ def create_app(test_config=None):
                     audit('update', 'gift', gift.id, summary=person.name, reason=reason, changes=changes)
                 db.session.commit()
                 flash('Contribution saved.', 'success'); return redirect(url_for('contributions'))
-            except (ValueError, KeyError) as exc: flash(str(exc), 'error')
-        return render_template('gift_form.html', gift=gift, years=years, funds=funds, people=persons, default_fund_id=default_fund.id if default_fund else None)
+            except (ValueError, KeyError) as exc:
+                flash(str(exc), 'error')
+                person_id = request.form.get('person_id', type=int)
+                selected_person = db.session.get(Person, person_id) if person_id else selected_person
+        return render_template(
+            'gift_form.html',
+            gift=gift,
+            years=years,
+            funds=funds,
+            selected_person=selected_person,
+            default_fund_id=default_fund.id if default_fund else None,
+            people_search_url=url_for('people_search'),
+        )
 
     @app.post('/contributions/<int:gift_id>/void')
     @require('gift_write')

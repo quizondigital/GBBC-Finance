@@ -429,6 +429,32 @@ def test_contribution_create_appears_in_audit_with_details(client):
     assert b'42.50' in audit_page
     assert b'Sunday gift' in audit_page
 
+def test_people_search_matches_any_name_part(client):
+    login(client, 'sally@example.org')
+    form = client.get('/contributions/new')
+    assert form.status_code == 200
+    assert b'person_search' in form.data
+    assert b'person_search.js' in form.data
+    assert b'Type at least 2 letters' in form.data
+    assert client.get('/people/search?q=a').status_code == 200
+    assert client.get('/people/search?q=a').get_json() == []
+    with client.application.app_context():
+        db.session.add(Person(first_name='Maria C', last_name='Pagulayan', member_type='Member'))
+        db.session.add(Person(first_name='Jose', last_name='Garcia-Lopez', member_type='Non-member'))
+        db.session.add(Person(first_name='Inactive', last_name='Person', member_type='Member', active=False))
+        db.session.commit()
+    by_first = client.get('/people/search?q=ria').get_json()
+    assert any(row['name'] == 'Maria C Pagulayan' for row in by_first)
+    by_middle = client.get('/people/search?q=C Pag').get_json()
+    assert any(row['name'] == 'Maria C Pagulayan' for row in by_middle)
+    by_last = client.get('/people/search?q=garcia').get_json()
+    assert any(row['last_name'] == 'Garcia-Lopez' for row in by_last)
+    by_tokens = client.get('/people/search?q=maria pag').get_json()
+    assert [row['name'] for row in by_tokens] == ['Maria C Pagulayan']
+    inactive = client.get('/people/search?q=Inactive').get_json()
+    assert inactive == []
+    assert client.get('/people/search?q=zz').get_json() == []
+
 def test_contribution_csv_import(client):
     login(client, 'sally@example.org')
     template = client.get('/contributions/template.csv')

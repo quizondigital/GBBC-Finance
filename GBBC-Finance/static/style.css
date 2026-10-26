@@ -52,3 +52,14 @@ button:disabled{opacity:.55;cursor:not-allowed}
 .audit-details pre{margin:0;white-space:pre-wrap;font:inherit;color:#3a4d44}
 .approval-form{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
 .approval-form input[name=audit_reason]{min-width:220px;flex:1}
+
+.person-search-field{position:relative}
+.person-search{position:relative}
+.person-search-input{width:100%}
+.person-search-results{position:absolute;z-index:20;left:0;right:0;top:calc(100% + 4px);margin:0;padding:6px 0;list-style:none;background:#fff;border:1px solid #d5ddd7;border-radius:8px;box-shadow:0 10px 28px rgba(24,48,36,.12);max-height:260px;overflow:auto}
+.person-search-results li{display:flex;justify-content:space-between;gap:12px;align-items:baseline;padding:10px 14px;cursor:pointer}
+.person-search-results li:hover,.person-search-results li.is-active{background:#eef6f1}
+.person-search-results .person-search-name mark{background:#d8eee2;color:inherit;padding:0 .1em;border-radius:2px}
+.person-search-results small{color:#6b7a72;font-size:12px;white-space:nowrap}
+.person-search-empty{padding:12px 14px;color:#6b7a72;cursor:default}
+.person-search-empty:hover{background:transparent}
