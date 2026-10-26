@@ -51,6 +51,7 @@ def test_leader_suppression_and_server_denial(client):
     login(client, 'chris@example.org')
     dashboard = client.get('/').data
     assert b'$123.00' in dashboard and b'Ada Member' not in dashboard
+    assert b'Giving by fund' in dashboard and b'General Fund' in dashboard
     assert b'Contributions</span>' not in dashboard and b'Administration</span>' not in dashboard
     for path in ['/contributions', '/reports/export.xlsx', '/admin/users', '/admin/roles', '/people/new']:
         assert client.get(path).status_code == 403
@@ -58,6 +59,27 @@ def test_leader_suppression_and_server_denial(client):
     assert b'$123.00' in report and b'Ada Member' not in report
     assert client.get('/reports?person_id=1').status_code == 403
     assert client.get('/reports?minimum_total=1').status_code == 403
+
+def test_dashboard_fund_pie_chart(client):
+    login(client, 'sally@example.org')
+    with client.application.app_context():
+        general = db.session.scalar(db.select(Fund).filter_by(name='General Fund'))
+        missions = db.session.scalar(db.select(Fund).filter_by(name='Missions Fund'))
+        db.session.add_all([
+            Gift(person_id=1, fiscal_year_id=1, fund_id=general.id, date=date(2026, 9, 1), amount=75, method='Check', entered_by_id=1),
+            Gift(person_id=1, fiscal_year_id=1, fund_id=missions.id, date=date(2026, 9, 2), amount=25, method='Cash', entered_by_id=1),
+            Gift(person_id=1, fiscal_year_id=1, fund_id=general.id, date=date(2026, 9, 3), amount=10, method='Cash', entered_by_id=1, status='void'),
+        ])
+        db.session.commit()
+    page = client.get('/').data
+    assert b'Giving by fund' in page
+    assert b'fund-pie' in page
+    assert b'General Fund' in page
+    assert b'Missions Fund' in page
+    assert b'$75.00' in page
+    assert b'$25.00' in page
+    assert b'75.0% of year-to-date giving' in page
+    assert b'25.0% of year-to-date giving' in page
 
 def test_gift_entry_and_year_close(client):
     login(client, 'sally@example.org')

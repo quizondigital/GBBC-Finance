@@ -574,6 +574,54 @@ def funds_in_display_order(funds):
     rank = {name: index for index, name in enumerate(DEFAULT_FUNDS)}
     return sorted(funds, key=lambda fund: (rank.get(fund.name, len(DEFAULT_FUNDS)), fund.name.lower()))
 
+FUND_CHART_COLORS = {
+    'General Fund': '#1b624c',
+    'Missions Fund': '#3d9b74',
+    'Building Fund': '#c4a35a',
+    'Benevolence Fund': '#3d6b8a',
+}
+FUND_CHART_EXTRA_COLORS = ('#7a5c45', '#5c7a6e', '#8b6b4a', '#2a5a6b', '#6b4f7a', '#4a6b58')
+
+def fund_giving_slices(fiscal_year_id=None):
+    """Active gift totals by fund for the overview pie chart."""
+    amount_col = db.func.coalesce(db.func.sum(Gift.amount), 0)
+    query = (
+        db.select(Fund.name, amount_col)
+        .join(Gift, Gift.fund_id == Fund.id)
+        .where(Gift.status == 'active')
+        .group_by(Fund.id, Fund.name)
+        .having(amount_col > 0)
+        .order_by(amount_col.desc(), Fund.name.asc())
+    )
+    if fiscal_year_id is not None:
+        query = query.where(Gift.fiscal_year_id == fiscal_year_id)
+    rows = db.session.execute(query).all()
+    total = sum((amount or Decimal('0')) for _, amount in rows)
+    if total <= 0:
+        return [], Decimal('0')
+    slices = []
+    cursor = 0.0
+    for index, (name, amount) in enumerate(rows):
+        amount = amount or Decimal('0')
+        percent = float(amount / total * 100)
+        color = FUND_CHART_COLORS.get(name) or FUND_CHART_EXTRA_COLORS[index % len(FUND_CHART_EXTRA_COLORS)]
+        start = cursor
+        end = cursor + percent
+        slices.append({
+            'name': name,
+            'amount': amount,
+            'percent': percent,
+            'color': color,
+            'start': start,
+            'end': end,
+        })
+        cursor = end
+    if slices:
+        # Close floating-point gaps so the pie is a full circle.
+        slices[-1]['end'] = 100.0
+        slices[-1]['percent'] = max(0.0, 100.0 - slices[-1]['start'])
+    return slices, total
+
 def resolve_fund_name(name):
     cleaned = (name or '').strip()
     if not cleaned:
@@ -1659,7 +1707,20 @@ def create_app(test_config=None):
         if fy: total_query = total_query.where(Gift.fiscal_year_id == fy.id)
         total = db.session.scalar(total_query) or Decimal('0')
         count = db.session.scalar(db.select(db.func.count(Person.id))) or 0
-        return render_template('dashboard.html', gifts=active_gifts, total=total, people_count=count, fy=fy)
+        fund_slices, fund_total = fund_giving_slices(fy.id if fy else None)
+        pie_gradient = ', '.join(
+            f"{item['color']} {item['start']:.4f}% {item['end']:.4f}%" for item in fund_slices
+        ) if fund_slices else ''
+        return render_template(
+            'dashboard.html',
+            gifts=active_gifts,
+            total=total,
+            people_count=count,
+            fy=fy,
+            fund_slices=fund_slices,
+            fund_total=fund_total,
+            pie_gradient=pie_gradient,
+        )
 
     @app.route('/people')
     @require('people_view')

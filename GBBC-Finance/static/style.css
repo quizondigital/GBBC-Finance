@@ -63,3 +63,18 @@ button:disabled{opacity:.55;cursor:not-allowed}
 .person-search-results small{color:#6b7a72;font-size:12px;white-space:nowrap}
 .person-search-empty{padding:12px 14px;color:#6b7a72;cursor:default}
 .person-search-empty:hover{background:transparent}
+
+.fund-chart-card{margin-top:24px}
+.fund-chart{display:grid;grid-template-columns:minmax(180px,220px) minmax(0,1fr);gap:28px;align-items:center;padding:8px 20px 22px}
+.fund-pie{width:min(100%,220px);aspect-ratio:1;border-radius:50%;background:#e8eee9;box-shadow:inset 0 0 0 1px rgba(33,52,45,.08);position:relative}
+.fund-pie::after{content:"";position:absolute;inset:28%;border-radius:50%;background:#fff;box-shadow:0 0 0 1px rgba(33,52,45,.06)}
+.fund-legend{list-style:none;margin:0;padding:0;display:grid;gap:12px}
+.fund-legend li{display:grid;grid-template-columns:14px minmax(0,1fr) auto;gap:12px;align-items:center}
+.fund-swatch{width:14px;height:14px;border-radius:4px;flex:none}
+.fund-legend strong{display:block;font-size:14px}
+.fund-legend small{display:block;color:#6b7a72;font-size:12px;margin-top:2px}
+.fund-legend b{font-size:14px;color:#1b624c;white-space:nowrap}
+@media (max-width:720px){
+  .fund-chart{grid-template-columns:1fr;justify-items:center}
+  .fund-legend{width:100%}
+}
