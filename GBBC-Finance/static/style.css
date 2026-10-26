@@ -78,3 +78,6 @@ button:disabled{opacity:.55;cursor:not-allowed}
   .fund-chart{grid-template-columns:1fr;justify-items:center}
   .fund-legend{width:100%}
 }
+
+.restore-confirm{border:1px solid #d7b7b0;background:#fff8f6}
+.restore-summary{margin:0 0 16px;padding-left:18px;display:grid;gap:6px}

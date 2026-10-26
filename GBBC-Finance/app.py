@@ -17,7 +17,7 @@ import click
 from flask import Flask, abort, current_app, flash, g, jsonify, redirect, render_template, request, send_file, session, url_for
 from flask_sqlalchemy import SQLAlchemy
 from mailmerge import MailMerge
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from pypdf import PdfReader, PdfWriter
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
@@ -53,8 +53,8 @@ FUND_ALIASES = {
     'Benevolence': 'Benevolence Fund',
 }
 PERMISSIONS = {
-    'Super Admin': {'overview', 'people_view', 'people_write', 'gift_view', 'gift_write', 'reports', 'detail_reports', 'statements', 'users', 'roles', 'fiscal', 'feedback', 'settings', 'feedback_review', 'audit_view', 'utilities'},
-    'System Administrator': {'overview', 'people_view', 'reports', 'users', 'roles', 'fiscal', 'feedback', 'settings', 'feedback_review', 'audit_view', 'utilities'},
+    'Super Admin': {'overview', 'people_view', 'people_write', 'gift_view', 'gift_write', 'reports', 'detail_reports', 'statements', 'users', 'roles', 'fiscal', 'feedback', 'settings', 'feedback_review', 'audit_view', 'utilities', 'backup'},
+    'System Administrator': {'overview', 'people_view', 'reports', 'users', 'roles', 'fiscal', 'feedback', 'settings', 'feedback_review', 'audit_view', 'utilities', 'backup'},
     'Finance Staff': {'overview', 'people_view', 'people_write', 'gift_view', 'gift_write', 'reports', 'detail_reports', 'statements', 'feedback', 'utilities'},
     'Church Leader': {'overview', 'people_view', 'reports', 'feedback', 'utilities'},
     'People-Manager': {'overview', 'people_view', 'people_write', 'feedback'},
@@ -68,7 +68,10 @@ PAGE_MATRIX = [
     ('User administration and signup approvals', 'users'), ('Role permissions', 'roles'), ('Fiscal-year administration', 'fiscal'),
     ('Feedback', 'feedback'), ('Website settings', 'settings'),
     ('Review submitted feedback', 'feedback_review'), ('Audit history', 'audit_view'),
+    ('Backup and restore', 'backup'),
 ]
+BACKUP_SHEETS = ('People', 'Contributions', 'Users', 'Audit log')
+BACKUP_MARK = 'GBBC_BACKUP_V1'
 
 db = SQLAlchemy()
 
@@ -433,6 +436,326 @@ def audit(action, entity, entity_id=None, summary='', reason='', details='', cha
         reason=(reason or '')[:255],
         details=details or '',
     ))
+
+def _sheet_rows(ws):
+    rows = list(ws.iter_rows(values_only=True))
+    if not rows:
+        return [], []
+    headers = [str(cell or '').strip() for cell in rows[0]]
+    data = []
+    for raw in rows[1:]:
+        if raw is None or all(cell is None or str(cell).strip() == '' for cell in raw):
+            continue
+        data.append({headers[i]: raw[i] if i < len(raw) else None for i in range(len(headers))})
+    return headers, data
+
+def _cell_str(value):
+    if value is None:
+        return ''
+    return str(value).strip()
+
+def _cell_bool(value, default=False):
+    if value is None or value == '':
+        return default
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in ('1', 'true', 'yes', 'y', 'active'):
+        return True
+    if text in ('0', 'false', 'no', 'n', 'inactive'):
+        return False
+    return default
+
+def _cell_date(value):
+    if value is None or value == '':
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    return date.fromisoformat(str(value)[:10])
+
+def _cell_datetime(value):
+    if value is None or value == '':
+        return None
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=None) if value.tzinfo else value
+    text = str(value).strip().replace('Z', '')
+    if 'T' in text:
+        return datetime.fromisoformat(text)
+    if ' ' in text:
+        return datetime.fromisoformat(text)
+    return datetime.fromisoformat(f'{text}T00:00:00')
+
+def fiscal_year_audit_window(year):
+    start = datetime.combine(year.start_date, datetime.min.time())
+    end = datetime.combine(year.end_date, datetime.max.time()).replace(microsecond=0)
+    return start, end
+
+def build_year_backup_workbook(year):
+    """Build a 4-sheet Excel backup for one fiscal year."""
+    gifts = db.session.scalars(
+        db.select(Gift).where(Gift.fiscal_year_id == year.id).order_by(Gift.date, Gift.id)
+    ).all()
+    people = db.session.scalars(db.select(Person).order_by(Person.id)).all()
+    users = db.session.scalars(db.select(User).order_by(User.id)).all()
+    audit_start, audit_end = fiscal_year_audit_window(year)
+    events = db.session.scalars(
+        db.select(Audit).where(Audit.timestamp >= audit_start, Audit.timestamp <= audit_end).order_by(Audit.id)
+    ).all()
+
+    wb = Workbook()
+    wb.properties.title = f'GBBC Finance backup {year.name}'
+    wb.properties.subject = f'{BACKUP_MARK}|{year.name}|{year.id}|{year.start_date.isoformat()}|{year.end_date.isoformat()}'
+
+    ws_people = wb.active
+    ws_people.title = 'People'
+    ws_people.append([
+        'id', 'first_name', 'last_name', 'member_type', 'address_line1', 'address_line2',
+        'city', 'state', 'zip_code', 'email', 'phone', 'active',
+    ])
+    for person in people:
+        ws_people.append([
+            person.id, person.first_name, person.last_name, person.member_type,
+            person.address_line1 or '', person.address_line2 or '', person.city or '',
+            person.state or '', person.zip_code or '', person.email or '', person.phone or '',
+            'yes' if person.active else 'no',
+        ])
+
+    ws_gifts = wb.create_sheet('Contributions')
+    ws_gifts.append([
+        'id', 'person_id', 'person_name', 'fiscal_year', 'fund', 'date', 'amount', 'method',
+        'reference', 'note', 'status', 'reconciled', 'entered_by_email', 'created_at',
+    ])
+    for gift in gifts:
+        ws_gifts.append([
+            gift.id, gift.person_id, gift.person.name, year.name, gift.fund.name,
+            gift.date.isoformat(), float(gift.amount), gift.method, gift.reference or '',
+            gift.note or '', gift.status, 'yes' if gift.reconciled else 'no',
+            gift.entered_by.email if gift.entered_by else '',
+            gift.created_at.isoformat(sep=' ', timespec='seconds') if gift.created_at else '',
+        ])
+
+    ws_users = wb.create_sheet('Users')
+    ws_users.append([
+        'id', 'first_name', 'last_name', 'email', 'username', 'phone', 'role', 'active',
+        'password_hash', 'last_login',
+    ])
+    for user in users:
+        ws_users.append([
+            user.id, user.first_name, user.last_name, user.email, user.username or '',
+            user.phone or '', user.role, 'yes' if user.active else 'no', user.password_hash,
+            user.last_login.isoformat(sep=' ', timespec='seconds') if user.last_login else '',
+        ])
+
+    ws_audit = wb.create_sheet('Audit log')
+    ws_audit.append([
+        'id', 'user_email', 'action', 'entity', 'entity_id', 'timestamp', 'summary', 'reason', 'details',
+    ])
+    for event in events:
+        actor = db.session.get(User, event.user_id) if event.user_id else None
+        ws_audit.append([
+            event.id,
+            actor.email if actor else '',
+            event.action,
+            event.entity,
+            event.entity_id if event.entity_id is not None else '',
+            event.timestamp.isoformat(sep=' ', timespec='seconds') if event.timestamp else '',
+            event.summary or '',
+            event.reason or '',
+            event.details or '',
+        ])
+
+    return wb, {
+        'people': len(people),
+        'contributions': len(gifts),
+        'users': len(users),
+        'audit': len(events),
+        'year_name': year.name,
+        'year_id': year.id,
+    }
+
+def parse_backup_workbook(file_storage_or_path, expected_year):
+    """Validate a backup workbook and return sheet row dicts plus summary."""
+    wb = load_workbook(file_storage_or_path, data_only=True)
+    missing = [name for name in BACKUP_SHEETS if name not in wb.sheetnames]
+    if missing:
+        raise ValueError(f'Backup file is missing worksheet(s): {", ".join(missing)}')
+    subject = (wb.properties.subject or '').strip()
+    if subject.startswith(BACKUP_MARK + '|'):
+        parts = subject.split('|')
+        if len(parts) >= 3 and parts[1] != expected_year.name:
+            raise ValueError(
+                f'This backup is for fiscal year {parts[1]}, but {expected_year.name} was selected.'
+            )
+    people_headers, people_rows = _sheet_rows(wb['People'])
+    gift_headers, gift_rows = _sheet_rows(wb['Contributions'])
+    user_headers, user_rows = _sheet_rows(wb['Users'])
+    audit_headers, audit_rows = _sheet_rows(wb['Audit log'])
+    required = {
+        'People': {'id', 'first_name', 'last_name', 'member_type'},
+        'Contributions': {'person_id', 'fund', 'date', 'amount', 'method', 'fiscal_year'},
+        'Users': {'id', 'first_name', 'last_name', 'email', 'role', 'password_hash'},
+        'Audit log': {'action', 'entity', 'timestamp'},
+    }
+    for sheet_name, headers in (
+        ('People', people_headers),
+        ('Contributions', gift_headers),
+        ('Users', user_headers),
+        ('Audit log', audit_headers),
+    ):
+        missing_cols = required[sheet_name] - set(headers)
+        if missing_cols:
+            raise ValueError(f'{sheet_name} sheet is missing column(s): {", ".join(sorted(missing_cols))}')
+    for row in gift_rows:
+        fy = _cell_str(row.get('fiscal_year'))
+        if fy and fy != expected_year.name:
+            raise ValueError(
+                f'Contribution rows reference fiscal year {fy}, but {expected_year.name} was selected.'
+            )
+    return {
+        'people': people_rows,
+        'contributions': gift_rows,
+        'users': user_rows,
+        'audit': audit_rows,
+        'summary': {
+            'people': len(people_rows),
+            'contributions': len(gift_rows),
+            'users': len(user_rows),
+            'audit': len(audit_rows),
+            'year_name': expected_year.name,
+            'year_id': expected_year.id,
+        },
+    }
+
+def apply_year_backup_restore(payload, year, actor):
+    """Restore people/users upserts and replace year contributions + year audit rows."""
+    # People upsert
+    for row in payload['people']:
+        person_id = int(row['id']) if row.get('id') not in (None, '') else None
+        person = db.session.get(Person, person_id) if person_id else None
+        if person is None:
+            person = Person(id=person_id) if person_id else Person()
+            db.session.add(person)
+        person.first_name = _cell_str(row.get('first_name'))[:100]
+        person.last_name = _cell_str(row.get('last_name'))[:100]
+        person.member_type = _cell_str(row.get('member_type')) or 'Non-member'
+        if person.member_type not in ('Member', 'Non-member'):
+            person.member_type = 'Non-member'
+        person.address_line1 = _cell_str(row.get('address_line1'))[:120]
+        person.address_line2 = _cell_str(row.get('address_line2'))[:120]
+        person.city = _cell_str(row.get('city'))[:100]
+        person.state = _cell_str(row.get('state'))[:2].upper()
+        person.zip_code = _cell_str(row.get('zip_code'))[:20]
+        person.email = _cell_str(row.get('email'))[:255]
+        person.phone = _cell_str(row.get('phone'))[:50]
+        person.active = _cell_bool(row.get('active'), True)
+    db.session.flush()
+
+    # Users upsert (keep the acting administrator signed in and active)
+    for row in payload['users']:
+        email = _cell_str(row.get('email')).lower()
+        if not email or not valid_email(email):
+            continue
+        user_id = int(row['id']) if row.get('id') not in (None, '') else None
+        user = db.session.get(User, user_id) if user_id else None
+        if user is None:
+            user = db.session.scalar(db.select(User).filter_by(email=email))
+        if user is None:
+            user = User(id=user_id) if user_id else User()
+            db.session.add(user)
+        if user.id == actor.id:
+            # Never lock out the administrator performing the restore.
+            user.first_name = _cell_str(row.get('first_name'))[:100] or user.first_name
+            user.last_name = _cell_str(row.get('last_name'))[:100] or user.last_name
+            user.phone = _cell_str(row.get('phone'))[:50] or user.phone
+            user.active = True
+            continue
+        user.first_name = _cell_str(row.get('first_name'))[:100]
+        user.last_name = _cell_str(row.get('last_name'))[:100]
+        user.email = email
+        username = _cell_str(row.get('username')) or None
+        user.username = username.lower() if username else None
+        user.phone = _cell_str(row.get('phone'))[:50]
+        role = _cell_str(row.get('role'))
+        user.role = role if role in ROLES else 'People Viewer'
+        user.active = _cell_bool(row.get('active'), True)
+        password_hash = _cell_str(row.get('password_hash'))
+        if password_hash:
+            user.password_hash = password_hash
+        last_login = _cell_datetime(row.get('last_login'))
+        if last_login:
+            user.last_login = last_login
+    db.session.flush()
+
+    # Replace contributions for this fiscal year
+    existing_gifts = db.session.scalars(db.select(Gift).where(Gift.fiscal_year_id == year.id)).all()
+    for gift in existing_gifts:
+        db.session.delete(gift)
+    db.session.flush()
+    for row in payload['contributions']:
+        person_id = int(row['person_id'])
+        person = db.session.get(Person, person_id)
+        if not person:
+            raise ValueError(f'Contribution references missing person_id {person_id}.')
+        fund = resolve_fund_name(_cell_str(row.get('fund')))
+        entered_email = _cell_str(row.get('entered_by_email')).lower()
+        entered_by = db.session.scalar(db.select(User).filter_by(email=entered_email)) if entered_email else None
+        if entered_by is None:
+            entered_by = actor
+        amount = parse_amount(row.get('amount'))
+        gift = Gift(
+            person_id=person.id,
+            fiscal_year_id=year.id,
+            fund_id=fund.id,
+            date=_cell_date(row.get('date')),
+            amount=amount,
+            method=_cell_str(row.get('method')) or 'Other',
+            reference=_cell_str(row.get('reference'))[:120],
+            note=_cell_str(row.get('note')),
+            status=_cell_str(row.get('status')) or 'active',
+            reconciled=_cell_bool(row.get('reconciled'), False),
+            entered_by_id=entered_by.id,
+        )
+        if gift.status not in ('active', 'void'):
+            gift.status = 'active'
+        if gift.method not in ('Check', 'Cash', 'Online', 'Other'):
+            gift.method = 'Other'
+        created_at = _cell_datetime(row.get('created_at'))
+        if created_at:
+            gift.created_at = created_at
+        db.session.add(gift)
+    db.session.flush()
+
+    # Replace audit rows that fall in the fiscal-year window
+    audit_start, audit_end = fiscal_year_audit_window(year)
+    old_events = db.session.scalars(
+        db.select(Audit).where(Audit.timestamp >= audit_start, Audit.timestamp <= audit_end)
+    ).all()
+    for event in old_events:
+        db.session.delete(event)
+    db.session.flush()
+    for row in payload['audit']:
+        email = _cell_str(row.get('user_email')).lower()
+        user = db.session.scalar(db.select(User).filter_by(email=email)) if email else None
+        stamp = _cell_datetime(row.get('timestamp')) or utcnow()
+        entity_id_raw = row.get('entity_id')
+        entity_id = int(entity_id_raw) if entity_id_raw not in (None, '') else None
+        db.session.add(Audit(
+            user_id=user.id if user else None,
+            action=_cell_str(row.get('action'))[:100] or 'restore',
+            entity=_cell_str(row.get('entity'))[:60] or 'unknown',
+            entity_id=entity_id,
+            timestamp=stamp,
+            summary=_cell_str(row.get('summary'))[:255],
+            reason=_cell_str(row.get('reason'))[:255],
+            details=_cell_str(row.get('details')),
+        ))
+
+def backup_pending_path(user_id):
+    folder = Path(current_app.instance_path) / 'backup_pending'
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder / f'restore_{user_id}.xlsx'
 
 def valid_email(value):
     return bool(re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+', value))
@@ -1548,7 +1871,7 @@ def create_app(test_config=None):
         SESSION_COOKIE_SECURE=os.environ.get('COOKIE_SECURE', '0') == '1' or os.environ.get('PORTAL_PRODUCTION') == '1',
         PERMANENT_SESSION_LIFETIME=INACTIVITY_TIMEOUT,
         SESSION_REFRESH_EACH_REQUEST=True,
-        MAX_CONTENT_LENGTH=2 * 1024 * 1024,
+        MAX_CONTENT_LENGTH=8 * 1024 * 1024,
         INACTIVITY_TIMEOUT_SECONDS=INACTIVITY_TIMEOUT_SECONDS,
     )
     if test_config: app.config.update(test_config)
@@ -2788,6 +3111,151 @@ def create_app(test_config=None):
             return redirect(url_for('feedback_review'))
         items = db.session.scalars(db.select(Feedback).order_by(Feedback.created_at.desc()).limit(200)).all()
         return render_template('feedback_review.html', items=items)
+
+    @app.route('/admin/backup', methods=['GET', 'POST'])
+    @require('backup')
+    def backup_page():
+        years = db.session.scalars(db.select(FiscalYear).order_by(FiscalYear.start_date.desc())).all()
+        selected_year_id = request.values.get('year_id', type=int)
+        selected_year = db.session.get(FiscalYear, selected_year_id) if selected_year_id else (years[0] if years else None)
+        pending = session.get('backup_restore')
+        pending_summary = pending.get('summary') if pending and pending.get('user_id') == g.user.id else None
+
+        if request.method == 'POST':
+            action = (request.form.get('action') or '').strip()
+            year = db.session.get(FiscalYear, request.form.get('year_id', type=int))
+            if action == 'download':
+                if not year:
+                    flash('Choose a fiscal year to back up.', 'error')
+                    return redirect(url_for('backup_page'))
+                wb, summary = build_year_backup_workbook(year)
+                out = io.BytesIO()
+                wb.save(out)
+                out.seek(0)
+                audit(
+                    'backup',
+                    'fiscal_year',
+                    year.id,
+                    summary=f'Excel backup for {year.name}',
+                    details=(
+                        f'People: {summary["people"]}\n'
+                        f'Contributions: {summary["contributions"]}\n'
+                        f'Users: {summary["users"]}\n'
+                        f'Audit log: {summary["audit"]}'
+                    ),
+                )
+                db.session.commit()
+                stamp = utcnow().strftime('%Y%m%d_%H%M')
+                return send_file(
+                    out,
+                    as_attachment=True,
+                    download_name=f'GBBC_backup_{year.name}_{stamp}.xlsx',
+                    mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                )
+
+            if action == 'upload':
+                if not year:
+                    flash('Choose the fiscal year this backup should restore into.', 'error')
+                    return redirect(url_for('backup_page'))
+                upload = request.files.get('backup_file')
+                if not upload or not upload.filename:
+                    flash('Choose a backup Excel file to restore.', 'error')
+                    return redirect(url_for('backup_page', year_id=year.id))
+                if not upload.filename.lower().endswith('.xlsx'):
+                    flash('Backup file must be an .xlsx workbook.', 'error')
+                    return redirect(url_for('backup_page', year_id=year.id))
+                raw = upload.read()
+                if not raw:
+                    flash('The uploaded backup file was empty.', 'error')
+                    return redirect(url_for('backup_page', year_id=year.id))
+                try:
+                    parsed = parse_backup_workbook(io.BytesIO(raw), year)
+                except Exception as exc:
+                    flash(str(exc), 'error')
+                    return redirect(url_for('backup_page', year_id=year.id))
+                pending_path = backup_pending_path(g.user.id)
+                pending_path.write_bytes(raw)
+                token = secrets.token_urlsafe(16)
+                session['backup_restore'] = {
+                    'user_id': g.user.id,
+                    'year_id': year.id,
+                    'token': token,
+                    'summary': parsed['summary'],
+                    'path': str(pending_path),
+                }
+                return redirect(url_for('backup_page', year_id=year.id, confirm=1))
+
+            if action == 'confirm_restore':
+                pending = session.get('backup_restore') or {}
+                token = (request.form.get('confirm_token') or '').strip()
+                typed = (request.form.get('confirm_text') or '').strip().upper()
+                if (
+                    not pending
+                    or pending.get('user_id') != g.user.id
+                    or pending.get('token') != token
+                    or typed != 'RESTORE'
+                ):
+                    flash('Restore confirmation failed. Upload the backup again and type RESTORE to confirm.', 'error')
+                    session.pop('backup_restore', None)
+                    return redirect(url_for('backup_page'))
+                year = db.session.get(FiscalYear, pending.get('year_id'))
+                path = Path(pending.get('path') or '')
+                if not year or not path.exists():
+                    flash('The staged backup file is missing. Upload it again.', 'error')
+                    session.pop('backup_restore', None)
+                    return redirect(url_for('backup_page'))
+                try:
+                    parsed = parse_backup_workbook(path, year)
+                    apply_year_backup_restore(parsed, year, g.user)
+                    audit(
+                        'restore',
+                        'fiscal_year',
+                        year.id,
+                        summary=f'Restored Excel backup for {year.name}',
+                        reason='Confirmed restore from Administration backup page',
+                        details=(
+                            f'People upserted: {parsed["summary"]["people"]}\n'
+                            f'Contributions replaced: {parsed["summary"]["contributions"]}\n'
+                            f'Users upserted: {parsed["summary"]["users"]}\n'
+                            f'Audit rows replaced: {parsed["summary"]["audit"]}'
+                        ),
+                    )
+                    db.session.commit()
+                except Exception as exc:
+                    db.session.rollback()
+                    current_app.logger.exception('Backup restore failed')
+                    flash(f'Restore failed: {exc}', 'error')
+                    return redirect(url_for('backup_page', year_id=year.id if year else None))
+                finally:
+                    session.pop('backup_restore', None)
+                    try:
+                        path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                flash(f'Restored backup for fiscal year {year.name}.', 'success')
+                return redirect(url_for('backup_page', year_id=year.id))
+
+            if action == 'cancel_restore':
+                pending = session.pop('backup_restore', None) or {}
+                path = Path(pending.get('path') or '')
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                flash('Restore cancelled.', 'success')
+                return redirect(url_for('backup_page', year_id=pending.get('year_id')))
+
+            flash('Unknown backup action.', 'error')
+            return redirect(url_for('backup_page'))
+
+        return render_template(
+            'backup.html',
+            years=years,
+            selected_year=selected_year,
+            pending_summary=pending_summary,
+            pending_token=(pending or {}).get('token') if pending_summary else None,
+            show_confirm=bool(request.args.get('confirm') and pending_summary),
+        )
 
     @app.route('/admin/audit')
     @require('audit_view')

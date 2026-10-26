@@ -1,0 +1,85 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="heading">
+  <div>
+    <p class="eyebrow">Administration</p>
+    <h1>Backup and restore</h1>
+    <p class="muted">Download a year workbook with People, Contributions, Users, and Audit log sheets, or restore from one of those files.</p>
+  </div>
+</div>
+{% include 'admin_nav.html' %}
+
+{% if not years %}
+<section class="card"><p class="empty">Create a fiscal year before running backups.</p></section>
+{% else %}
+
+<section class="card form-card" style="margin-bottom:20px">
+  <h2>Create backup</h2>
+  <p class="muted">Exports all people and users, contributions for the selected fiscal year, and audit events dated within that year.</p>
+  <form method="post" class="form-stack">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="action" value="download">
+    <label>Fiscal year <em>required</em>
+      <select name="year_id" required>
+        {% for year in years %}
+        <option value="{{ year.id }}" {{ 'selected' if selected_year and selected_year.id == year.id }}>{{ year.name }} ({{ year.start_date }} – {{ year.end_date }})</option>
+        {% endfor %}
+      </select>
+    </label>
+    <button class="button" type="submit">Download Excel backup</button>
+  </form>
+</section>
+
+<section class="card form-card" style="margin-bottom:20px">
+  <h2>Restore backup</h2>
+  <p class="muted">Restoring replaces contributions and audit rows for the selected year, and upserts people and users from the workbook. Your signed-in account stays active.</p>
+  <form method="post" class="form-stack" enctype="multipart/form-data">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="action" value="upload">
+    <label>Fiscal year to restore into <em>required</em>
+      <select name="year_id" required>
+        {% for year in years %}
+        <option value="{{ year.id }}" {{ 'selected' if selected_year and selected_year.id == year.id }}>{{ year.name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Backup file (.xlsx) <em>required</em>
+      <input type="file" name="backup_file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required>
+    </label>
+    <button class="button secondary" type="submit">Upload and review restore</button>
+  </form>
+</section>
+
+{% if show_confirm and pending_summary %}
+<section class="card form-card restore-confirm">
+  <h2>Confirm restore</h2>
+  <p class="muted">This will change live data for fiscal year <strong>{{ pending_summary.year_name }}</strong>.</p>
+  <ul class="restore-summary">
+    <li><strong>{{ pending_summary.people }}</strong> people rows will be upserted</li>
+    <li><strong>{{ pending_summary.contributions }}</strong> contributions will replace the year’s gift records</li>
+    <li><strong>{{ pending_summary.users }}</strong> users will be upserted</li>
+    <li><strong>{{ pending_summary.audit }}</strong> audit rows will replace events dated in that year</li>
+  </ul>
+  <form method="post" class="form-stack" onsubmit="return confirm('Restore this backup now? This cannot be undone from the portal.');">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="action" value="confirm_restore">
+    <input type="hidden" name="year_id" value="{{ pending_summary.year_id }}">
+    <input type="hidden" name="confirm_token" value="{{ pending_token }}">
+    <label>Type RESTORE to confirm <em>required</em>
+      <input name="confirm_text" required autocomplete="off" placeholder="RESTORE">
+    </label>
+    <div class="form-actions">
+      <button class="button" type="submit">Restore backup</button>
+    </div>
+  </form>
+  <form method="post" style="margin-top:12px">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="action" value="cancel_restore">
+    <input type="hidden" name="year_id" value="{{ pending_summary.year_id }}">
+    <button class="button secondary" type="submit">Cancel</button>
+  </form>
+</section>
+{% endif %}
+
+{% endif %}
+{% endblock %}

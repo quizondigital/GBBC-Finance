@@ -65,6 +65,94 @@ def test_people_manager_role_permissions(client):
     signup = client.get('/signup').data
     assert b'People-Manager' in signup
 
+def test_backup_and_restore_year_workbook(client):
+    from openpyxl import load_workbook
+    from app import Audit
+    login(client, 'sally@example.org')
+    page = client.get('/admin/backup')
+    assert page.status_code == 200
+    assert b'Download Excel backup' in page.data
+    assert b'Restore backup' in page.data
+    with client.application.app_context():
+        db.session.add(Person(first_name='Ben', last_name='Backup', member_type='Member'))
+        db.session.flush()
+        person_id = db.session.scalar(db.select(Person.id).filter_by(last_name='Backup'))
+        db.session.add(Gift(
+            person_id=person_id, fiscal_year_id=1, fund_id=1, date=date(2026, 3, 1),
+            amount=55.25, method='Check', note='Backup gift', entered_by_id=1,
+        ))
+        db.session.commit()
+    download = client.post('/admin/backup', data={
+        'csrf_token': token(client), 'action': 'download', 'year_id': '1',
+    })
+    assert download.status_code == 200
+    assert download.mimetype.startswith('application/vnd.openxmlformats-officedocument')
+    wb = load_workbook(io.BytesIO(download.data))
+    assert set(wb.sheetnames) == {'People', 'Contributions', 'Users', 'Audit log'}
+    gift_names = [row[2].value for row in wb['Contributions'].iter_rows(min_row=2) if row[2].value]
+    assert 'Ben Backup' in gift_names
+    with client.application.app_context():
+        gift = db.session.scalar(db.select(Gift).where(Gift.note == 'Backup gift'))
+        gift.amount = 1
+        gift.note = 'changed'
+        db.session.commit()
+        gift_id = gift.id
+    upload = client.post(
+        '/admin/backup',
+        data={
+            'csrf_token': token(client),
+            'action': 'upload',
+            'year_id': '1',
+            'backup_file': (io.BytesIO(download.data), 'backup.xlsx'),
+        },
+        content_type='multipart/form-data',
+        follow_redirects=True,
+    )
+    assert b'Confirm restore' in upload.data
+    assert b'Type RESTORE to confirm' in upload.data
+    with client.session_transaction() as sess:
+        pending = sess.get('backup_restore')
+        assert pending and pending.get('token')
+        confirm_token = pending['token']
+    blocked = client.post('/admin/backup', data={
+        'csrf_token': token(client),
+        'action': 'confirm_restore',
+        'year_id': '1',
+        'confirm_token': confirm_token,
+        'confirm_text': 'NOPE',
+    }, follow_redirects=True)
+    assert b'Restore confirmation failed' in blocked.data
+    # re-upload after failed confirm cleared staging
+    upload = client.post(
+        '/admin/backup',
+        data={
+            'csrf_token': token(client),
+            'action': 'upload',
+            'year_id': '1',
+            'backup_file': (io.BytesIO(download.data), 'backup.xlsx'),
+        },
+        content_type='multipart/form-data',
+        follow_redirects=True,
+    )
+    assert b'Confirm restore' in upload.data
+    with client.session_transaction() as sess:
+        confirm_token = sess['backup_restore']['token']
+    restored = client.post('/admin/backup', data={
+        'csrf_token': token(client),
+        'action': 'confirm_restore',
+        'year_id': '1',
+        'confirm_token': confirm_token,
+        'confirm_text': 'RESTORE',
+    }, follow_redirects=True)
+    assert b'Restored backup for fiscal year' in restored.data
+    with client.application.app_context():
+        gift = db.session.scalar(db.select(Gift).where(Gift.note == 'Backup gift'))
+        assert gift is not None
+        assert gift.amount == 55.25
+        assert db.session.get(Gift, gift_id) is None or db.session.get(Gift, gift_id).note != 'changed'
+        event = db.session.scalar(db.select(Audit).where(Audit.action == 'restore').order_by(Audit.id.desc()))
+        assert event is not None and '2026' in event.summary
+
 def test_inactivity_logs_out_after_ten_minutes(client):
     from datetime import datetime, timedelta, timezone
     from app import Audit
@@ -221,7 +309,7 @@ def test_login_limit(client):
 
 def test_all_primary_pages_render(client):
     login(client, 'sally@example.org')
-    paths = ['/', '/people', '/people/new', '/people/1/edit', '/people/import', '/contributions', '/contributions/import', '/contributions/new', '/reports', '/admin/users', '/admin/users/1/edit', '/admin/roles', '/admin/fiscal', '/admin/settings', '/admin/feedback', '/admin/audit', '/help']
+    paths = ['/', '/people', '/people/new', '/people/1/edit', '/people/import', '/contributions', '/contributions/import', '/contributions/new', '/reports', '/admin/users', '/admin/users/1/edit', '/admin/roles', '/admin/fiscal', '/admin/settings', '/admin/feedback', '/admin/audit', '/admin/backup', '/help']
     for path in paths:
         response = client.get(path)
         assert response.status_code == 200, path
