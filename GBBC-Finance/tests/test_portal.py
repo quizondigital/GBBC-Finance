@@ -113,9 +113,9 @@ def test_backup_and_restore_year_workbook(client):
     for row in float_wb['Contributions'].iter_rows(min_row=2):
         if row[6].value not in (None, ''):
             row[6].value = float(row[6].value)
-    float_bytes = io.BytesIO()
-    float_wb.save(float_bytes)
-    float_bytes.seek(0)
+    float_buf = io.BytesIO()
+    float_wb.save(float_buf)
+    float_payload = float_buf.getvalue()
     with client.application.app_context():
         gift = db.session.scalar(db.select(Gift).where(Gift.note == 'Backup gift'))
         gift.amount = 1
@@ -128,7 +128,7 @@ def test_backup_and_restore_year_workbook(client):
             'csrf_token': token(client),
             'action': 'upload',
             'year_id': '1',
-            'backup_file': (float_bytes, 'backup.xlsx'),
+            'backup_file': (io.BytesIO(float_payload), 'backup.xlsx'),
         },
         content_type='multipart/form-data',
         follow_redirects=True,
@@ -148,14 +148,13 @@ def test_backup_and_restore_year_workbook(client):
     }, follow_redirects=True)
     assert b'Restore confirmation failed' in blocked.data
     # re-upload after failed confirm cleared staging
-    float_bytes.seek(0)
     upload = client.post(
         '/admin/backup',
         data={
             'csrf_token': token(client),
             'action': 'upload',
             'year_id': '1',
-            'backup_file': (float_bytes, 'backup.xlsx'),
+            'backup_file': (io.BytesIO(float_payload), 'backup.xlsx'),
         },
         content_type='multipart/form-data',
         follow_redirects=True,
