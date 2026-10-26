@@ -67,6 +67,7 @@ def test_people_manager_role_permissions(client):
 
 def test_inactivity_logs_out_after_ten_minutes(client):
     from datetime import datetime, timedelta, timezone
+    from app import Audit
     login(client, 'sally@example.org')
     assert client.get('/').status_code == 200
     with client.session_transaction() as sess:
@@ -78,6 +79,16 @@ def test_inactivity_logs_out_after_ten_minutes(client):
     assert b'Sign in' in response.data or b'sign in' in response.data.lower() or b'Password' in response.data
     assert client.get('/people').status_code == 302
     assert client.get('/session/ping').status_code == 401
+    with client.application.app_context():
+        event = db.session.scalar(
+            db.select(Audit).where(Audit.action == 'idle_logout', Audit.user_id == 1).order_by(Audit.id.desc())
+        )
+        assert event is not None
+        assert '10 minutes of inactivity' in event.summary
+    login(client, 'sally@example.org')
+    audit_page = client.get('/admin/audit').data
+    assert b'idle_logout' in audit_page
+    assert b'Signed out after 10 minutes of inactivity' in audit_page
 
 def test_leader_suppression_and_server_denial(client):
     with client.application.app_context():

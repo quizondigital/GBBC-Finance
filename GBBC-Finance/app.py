@@ -1581,6 +1581,13 @@ def create_app(test_config=None):
                 except ValueError:
                     last_activity = None
                 if last_activity is not None and (now - last_activity) > INACTIVITY_TIMEOUT:
+                    audit(
+                        'idle_logout',
+                        'user',
+                        g.user.id,
+                        summary='Signed out after 10 minutes of inactivity',
+                    )
+                    db.session.commit()
                     session.clear()
                     g.user = None
                     flash('You were signed out after 10 minutes of inactivity.', 'error')
