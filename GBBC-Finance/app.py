@@ -487,6 +487,29 @@ def _cell_datetime(value):
         return datetime.fromisoformat(text)
     return datetime.fromisoformat(f'{text}T00:00:00')
 
+def _cell_amount(value):
+    """Parse money from Excel/backup cells without float-precision false failures."""
+    if value is None or value == '':
+        raise ValueError('Enter a positive amount with no more than two decimal places.')
+    try:
+        if isinstance(value, Decimal):
+            amount = value
+        elif isinstance(value, bool):
+            raise ValueError
+        elif isinstance(value, int):
+            amount = Decimal(value)
+        elif isinstance(value, float):
+            # Excel often returns floats; round via string to avoid binary artifacts.
+            amount = Decimal(f'{value:.2f}')
+        else:
+            text = str(value).strip().replace(',', '').replace('$', '')
+            amount = Decimal(text)
+        if not amount.is_finite() or amount <= 0:
+            raise ValueError
+        return amount.quantize(Decimal('0.01'))
+    except (InvalidOperation, ValueError, TypeError):
+        raise ValueError('Enter a positive amount with no more than two decimal places.')
+
 def fiscal_year_audit_window(year):
     start = datetime.combine(year.start_date, datetime.min.time())
     end = datetime.combine(year.end_date, datetime.max.time()).replace(microsecond=0)
@@ -530,7 +553,7 @@ def build_year_backup_workbook(year):
     for gift in gifts:
         ws_gifts.append([
             gift.id, gift.person_id, gift.person.name, year.name, gift.fund.name,
-            gift.date.isoformat(), float(gift.amount), gift.method, gift.reference or '',
+            gift.date.isoformat(), f'{gift.amount:.2f}', gift.method, gift.reference or '',
             gift.note or '', gift.status, 'yes' if gift.reconciled else 'no',
             gift.entered_by.email if gift.entered_by else '',
             gift.created_at.isoformat(sep=' ', timespec='seconds') if gift.created_at else '',
@@ -703,7 +726,7 @@ def apply_year_backup_restore(payload, year, actor):
         entered_by = db.session.scalar(db.select(User).filter_by(email=entered_email)) if entered_email else None
         if entered_by is None:
             entered_by = actor
-        amount = parse_amount(row.get('amount'))
+        amount = _cell_amount(row.get('amount'))
         gift = Gift(
             person_id=person.id,
             fiscal_year_id=year.id,

@@ -66,8 +66,12 @@ def test_people_manager_role_permissions(client):
     assert b'People-Manager' in signup
 
 def test_backup_and_restore_year_workbook(client):
-    from openpyxl import load_workbook
-    from app import Audit
+    from decimal import Decimal
+    from openpyxl import Workbook, load_workbook
+    from app import Audit, _cell_amount
+    assert _cell_amount(10.1) == Decimal('10.10')
+    assert _cell_amount(55.25) == Decimal('55.25')
+    assert _cell_amount('12.50') == Decimal('12.50')
     login(client, 'sally@example.org')
     page = client.get('/admin/backup')
     assert page.status_code == 200
@@ -81,6 +85,10 @@ def test_backup_and_restore_year_workbook(client):
             person_id=person_id, fiscal_year_id=1, fund_id=1, date=date(2026, 3, 1),
             amount=55.25, method='Check', note='Backup gift', entered_by_id=1,
         ))
+        db.session.add(Gift(
+            person_id=person_id, fiscal_year_id=1, fund_id=1, date=date(2026, 3, 2),
+            amount=Decimal('10.10'), method='Cash', note='Float prone', entered_by_id=1,
+        ))
         db.session.commit()
     download = client.post('/admin/backup', data={
         'csrf_token': token(client), 'action': 'download', 'year_id': '1',
@@ -91,6 +99,23 @@ def test_backup_and_restore_year_workbook(client):
     assert set(wb.sheetnames) == {'People', 'Contributions', 'Users', 'Audit log'}
     gift_names = [row[2].value for row in wb['Contributions'].iter_rows(min_row=2) if row[2].value]
     assert 'Ben Backup' in gift_names
+    # Simulate Excel float cells that used to break restore.
+    float_wb = Workbook()
+    float_wb.properties.subject = wb.properties.subject
+    for title in ('People', 'Contributions', 'Users', 'Audit log'):
+        if title == 'People':
+            src, dst = wb[title], float_wb.active
+            dst.title = title
+        else:
+            src, dst = wb[title], float_wb.create_sheet(title)
+        for row in src.iter_rows(values_only=True):
+            dst.append(list(row))
+    for row in float_wb['Contributions'].iter_rows(min_row=2):
+        if row[6].value not in (None, ''):
+            row[6].value = float(row[6].value)
+    float_bytes = io.BytesIO()
+    float_wb.save(float_bytes)
+    float_bytes.seek(0)
     with client.application.app_context():
         gift = db.session.scalar(db.select(Gift).where(Gift.note == 'Backup gift'))
         gift.amount = 1
@@ -103,7 +128,7 @@ def test_backup_and_restore_year_workbook(client):
             'csrf_token': token(client),
             'action': 'upload',
             'year_id': '1',
-            'backup_file': (io.BytesIO(download.data), 'backup.xlsx'),
+            'backup_file': (float_bytes, 'backup.xlsx'),
         },
         content_type='multipart/form-data',
         follow_redirects=True,
@@ -123,13 +148,14 @@ def test_backup_and_restore_year_workbook(client):
     }, follow_redirects=True)
     assert b'Restore confirmation failed' in blocked.data
     # re-upload after failed confirm cleared staging
+    float_bytes.seek(0)
     upload = client.post(
         '/admin/backup',
         data={
             'csrf_token': token(client),
             'action': 'upload',
             'year_id': '1',
-            'backup_file': (io.BytesIO(download.data), 'backup.xlsx'),
+            'backup_file': (float_bytes, 'backup.xlsx'),
         },
         content_type='multipart/form-data',
         follow_redirects=True,
@@ -145,11 +171,14 @@ def test_backup_and_restore_year_workbook(client):
         'confirm_text': 'RESTORE',
     }, follow_redirects=True)
     assert b'Restored backup for fiscal year' in restored.data
+    assert b'positive amount' not in restored.data
     with client.application.app_context():
         gift = db.session.scalar(db.select(Gift).where(Gift.note == 'Backup gift'))
         assert gift is not None
-        assert gift.amount == 55.25
+        assert gift.amount == Decimal('55.25')
         assert db.session.get(Gift, gift_id) is None or db.session.get(Gift, gift_id).note != 'changed'
+        float_gift = db.session.scalar(db.select(Gift).where(Gift.note == 'Float prone'))
+        assert float_gift is not None and float_gift.amount == Decimal('10.10')
         event = db.session.scalar(db.select(Audit).where(Audit.action == 'restore').order_by(Audit.id.desc()))
         assert event is not None and '2026' in event.summary
 
