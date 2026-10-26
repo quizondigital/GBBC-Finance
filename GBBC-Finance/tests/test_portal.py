@@ -44,6 +44,40 @@ def test_auth_and_user_fields(client):
     assert b'User created' in good.data
     assert client.post('/admin/users', data={}).status_code == 400
     assert b'Church Leader' in client.get('/admin/roles').data
+    assert b'People-Manager' in client.get('/admin/roles').data
+
+def test_people_manager_role_permissions(client):
+    with client.application.app_context():
+        db.session.add(User(
+            first_name='Pam', last_name='Manager', email='pam@example.org', phone='555-4000',
+            role='People-Manager', password_hash=_hash('correct-password'),
+        ))
+        db.session.commit()
+    login(client, 'pam@example.org')
+    assert client.get('/').status_code == 200
+    assert client.get('/people').status_code == 200
+    assert client.get('/people/new').status_code == 200
+    assert client.get('/help').status_code == 200
+    assert b'session_idle.js' in client.get('/people').data
+    for path in ['/contributions', '/reports', '/utilities', '/admin/users', '/admin/roles']:
+        assert client.get(path).status_code == 403
+    client.post('/logout', data={'csrf_token': token(client)})
+    signup = client.get('/signup').data
+    assert b'People-Manager' in signup
+
+def test_inactivity_logs_out_after_ten_minutes(client):
+    from datetime import datetime, timedelta, timezone
+    login(client, 'sally@example.org')
+    assert client.get('/').status_code == 200
+    with client.session_transaction() as sess:
+        expired = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=11)
+        sess['last_activity'] = expired.isoformat(timespec='seconds')
+    response = client.get('/people', follow_redirects=True)
+    assert response.status_code == 200
+    assert b'10 minutes of inactivity' in response.data
+    assert b'Sign in' in response.data or b'sign in' in response.data.lower() or b'Password' in response.data
+    assert client.get('/people').status_code == 302
+    assert client.get('/session/ping').status_code == 401
 
 def test_leader_suppression_and_server_denial(client):
     with client.application.app_context():

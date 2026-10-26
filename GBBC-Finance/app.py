@@ -25,12 +25,14 @@ from reportlab.lib.utils import ImageReader, simpleSplit
 from reportlab.pdfgen import canvas
 from werkzeug.security import check_password_hash, generate_password_hash
 
-ROLES = ('Super Admin', 'System Administrator', 'Finance Staff', 'Church Leader', 'People Viewer')
-SIGNUP_ROLES = ('System Administrator', 'Finance Staff', 'People Viewer')
+ROLES = ('Super Admin', 'System Administrator', 'Finance Staff', 'Church Leader', 'People-Manager', 'People Viewer')
+SIGNUP_ROLES = ('System Administrator', 'Finance Staff', 'People-Manager', 'People Viewer')
 LEGACY_ROLE_MAP = {
     'Admin': 'System Administrator',
     'Finance': 'Finance Staff',
 }
+INACTIVITY_TIMEOUT = timedelta(minutes=10)
+INACTIVITY_TIMEOUT_SECONDS = int(INACTIVITY_TIMEOUT.total_seconds())
 US_STATES = (
     ('AL', 'Alabama'), ('AK', 'Alaska'), ('AZ', 'Arizona'), ('AR', 'Arkansas'), ('CA', 'California'),
     ('CO', 'Colorado'), ('CT', 'Connecticut'), ('DE', 'Delaware'), ('DC', 'District of Columbia'),
@@ -55,6 +57,7 @@ PERMISSIONS = {
     'System Administrator': {'overview', 'people_view', 'reports', 'users', 'roles', 'fiscal', 'feedback', 'settings', 'feedback_review', 'audit_view', 'utilities'},
     'Finance Staff': {'overview', 'people_view', 'people_write', 'gift_view', 'gift_write', 'reports', 'detail_reports', 'statements', 'feedback', 'utilities'},
     'Church Leader': {'overview', 'people_view', 'reports', 'feedback', 'utilities'},
+    'People-Manager': {'overview', 'people_view', 'people_write', 'feedback'},
     'People Viewer': {'people_view'},
 }
 PAGE_MATRIX = [
@@ -1543,8 +1546,10 @@ def create_app(test_config=None):
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SAMESITE='Lax',
         SESSION_COOKIE_SECURE=os.environ.get('COOKIE_SECURE', '0') == '1' or os.environ.get('PORTAL_PRODUCTION') == '1',
-        PERMANENT_SESSION_LIFETIME=1800,
+        PERMANENT_SESSION_LIFETIME=INACTIVITY_TIMEOUT,
+        SESSION_REFRESH_EACH_REQUEST=True,
         MAX_CONTENT_LENGTH=2 * 1024 * 1024,
+        INACTIVITY_TIMEOUT_SECONDS=INACTIVITY_TIMEOUT_SECONDS,
     )
     if test_config: app.config.update(test_config)
     db.init_app(app)
@@ -1567,6 +1572,23 @@ def create_app(test_config=None):
         g.user = db.session.get(User, session.get('user_id')) if session.get('user_id') else None
         if g.user and not g.user.active:
             session.clear(); g.user = None
+        if g.user:
+            now = utcnow()
+            last_raw = session.get('last_activity')
+            if last_raw:
+                try:
+                    last_activity = datetime.fromisoformat(last_raw)
+                except ValueError:
+                    last_activity = None
+                if last_activity is not None and (now - last_activity) > INACTIVITY_TIMEOUT:
+                    session.clear()
+                    g.user = None
+                    flash('You were signed out after 10 minutes of inactivity.', 'error')
+                    if request.endpoint not in ('login', 'signup', 'static', 'session_ping'):
+                        next_path = request.path if request.method == 'GET' and request.path.startswith('/') and not request.path.startswith('//') else None
+                        return redirect(url_for('login', next=next_path) if next_path else url_for('login'))
+            if g.user:
+                session['last_activity'] = now.isoformat(timespec='seconds')
         if 'csrf' not in session: session['csrf'] = secrets.token_urlsafe(32)
         if request.method in ('POST', 'PUT', 'PATCH', 'DELETE'):
             if not secrets.compare_digest(session['csrf'], request.form.get('csrf_token', '')): abort(400)
@@ -1577,6 +1599,7 @@ def create_app(test_config=None):
         def can(permission): return bool(g.user and permission in PERMISSIONS.get(g.user.role, set()))
         return {
             'current_user': g.user,
+            'inactivity_timeout_seconds': current_app.config.get('INACTIVITY_TIMEOUT_SECONDS', INACTIVITY_TIMEOUT_SECONDS),
             'can': can,
             'csrf_token': lambda: session['csrf'],
             'roles': ROLES,
@@ -1607,7 +1630,10 @@ def create_app(test_config=None):
                 return render_template('login.html'), 429
             user = db.session.scalar(db.select(User).where(db.or_(User.email == identifier, User.username == identifier), User.active.is_(True)))
             if user and check_password_hash(user.password_hash, request.form.get('password', '')):
-                session.clear(); session['user_id'] = user.id; session['csrf'] = secrets.token_urlsafe(32)
+                session.clear()
+                session['user_id'] = user.id
+                session['csrf'] = secrets.token_urlsafe(32)
+                session['last_activity'] = utcnow().isoformat(timespec='seconds')
                 user.last_login = utcnow(); g.user = user; audit('login', 'user', user.id); db.session.commit()
                 target = request.args.get('next') or default_home_path(user)
                 if not (target.startswith('/') and not target.startswith('//')):
@@ -1697,6 +1723,13 @@ def create_app(test_config=None):
     def logout():
         if g.user: audit('logout', 'user', g.user.id); db.session.commit()
         session.clear(); return redirect(url_for('login'))
+
+    @app.get('/session/ping')
+    def session_ping():
+        """Keep the session alive while the browser still has user activity."""
+        if not g.user:
+            return ('', 401)
+        return ('', 204)
 
     @app.route('/')
     @require('overview')
