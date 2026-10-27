@@ -931,6 +931,19 @@ FUND_CHART_COLORS = {
 }
 FUND_CHART_EXTRA_COLORS = ('#7a5c45', '#5c7a6e', '#8b6b4a', '#2a5a6b', '#6b4f7a', '#4a6b58')
 
+def fund_chart_color(name, index=0):
+    return FUND_CHART_COLORS.get(name) or FUND_CHART_EXTRA_COLORS[index % len(FUND_CHART_EXTRA_COLORS)]
+
+def iter_month_starts(start, end):
+    cursor = date(start.year, start.month, 1)
+    last = date(end.year, end.month, 1)
+    while cursor <= last:
+        yield cursor
+        if cursor.month == 12:
+            cursor = date(cursor.year + 1, 1, 1)
+        else:
+            cursor = date(cursor.year, cursor.month + 1, 1)
+
 def fund_giving_slices(fiscal_year_id=None):
     """Active gift totals by fund for the overview pie chart."""
     amount_col = db.func.coalesce(db.func.sum(Gift.amount), 0)
@@ -953,7 +966,7 @@ def fund_giving_slices(fiscal_year_id=None):
     for index, (name, amount) in enumerate(rows):
         amount = amount or Decimal('0')
         percent = float(amount / total * 100)
-        color = FUND_CHART_COLORS.get(name) or FUND_CHART_EXTRA_COLORS[index % len(FUND_CHART_EXTRA_COLORS)]
+        color = fund_chart_color(name, index)
         start = cursor
         end = cursor + percent
         slices.append({
@@ -970,6 +983,48 @@ def fund_giving_slices(fiscal_year_id=None):
         slices[-1]['end'] = 100.0
         slices[-1]['percent'] = max(0.0, 100.0 - slices[-1]['start'])
     return slices, total
+
+def monthly_giving_bars(fiscal_year, fund_slices):
+    """One stacked bar per month, colored by fund, for the dashboard chart."""
+    if fiscal_year is None or not fund_slices:
+        return []
+    colors = {item['name']: item['color'] for item in fund_slices}
+    rank = {name: index for index, name in enumerate(DEFAULT_FUNDS)}
+    names = sorted(colors, key=lambda name: (rank.get(name, len(DEFAULT_FUNDS)), name.lower()))
+    months = list(iter_month_starts(fiscal_year.start_date, fiscal_year.end_date))
+    spans_years = months[0].year != months[-1].year if months else False
+    year_col = db.extract('year', Gift.date)
+    month_col = db.extract('month', Gift.date)
+    rows = db.session.execute(
+        db.select(year_col, month_col, Fund.name, db.func.coalesce(db.func.sum(Gift.amount), 0))
+        .join(Fund, Gift.fund_id == Fund.id)
+        .where(Gift.status == 'active', Gift.fiscal_year_id == fiscal_year.id)
+        .group_by(year_col, month_col, Fund.id, Fund.name)
+    ).all()
+    totals = {}
+    for year, month, name, amount in rows:
+        totals[(int(year), int(month), name)] = amount or Decimal('0')
+    bars = []
+    max_total = Decimal('0')
+    for month_date in months:
+        segments = []
+        month_total = Decimal('0')
+        for name in names:
+            amount = totals.get((month_date.year, month_date.month, name), Decimal('0'))
+            if amount <= 0:
+                continue
+            month_total += amount
+            segments.append({'name': name, 'amount': amount, 'color': colors[name]})
+        max_total = max(max_total, month_total)
+        bars.append({
+            'label': month_date.strftime("%b '%y" if spans_years else '%b'),
+            'title': month_date.strftime('%B %Y'),
+            'total': month_total,
+            'segments': segments,
+        })
+    for bar in bars:
+        bar['height'] = float(bar['total'] / max_total * 100) if max_total else 0.0
+    return bars
 
 def resolve_fund_name(name):
     cleaned = (name or '').strip()
@@ -2106,6 +2161,7 @@ def create_app(test_config=None):
             fund_slices=fund_slices,
             fund_total=fund_total,
             pie_gradient=pie_gradient,
+            month_bars=monthly_giving_bars(fy, fund_slices),
         )
 
     @app.route('/people')

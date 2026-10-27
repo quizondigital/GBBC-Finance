@@ -59,6 +59,27 @@
       {% endfor %}
     </ul>
   </div>
+  {% if month_bars %}
+  <div class="month-chart">
+    <h3>Monthly giving</h3>
+    <p>Each bar is one month. The amount above it is that month's total, stacked by fund.</p>
+    <div class="month-bars" role="list" aria-label="Bar chart of monthly giving totals">
+      {% for bar in month_bars %}
+      <div class="month-bar" role="listitem" aria-label="{{ bar.title }} total ${{ '{:,.2f}'.format(bar.total) }}">
+        <span class="month-bar-total">${{ '{:,.2f}'.format(bar.total) }}</span>
+        <div class="month-bar-stack">
+          <div class="month-bar-fill" style="height: {{ '%.2f'|format(bar.height) }}%" title="{{ bar.title }} · ${{ '{:,.2f}'.format(bar.total) }}">
+            {% for seg in bar.segments %}
+            <span class="month-bar-seg" style="flex: {{ seg.amount }} 1 0; background: {{ seg.color }}" title="{{ seg.name }} · ${{ '{:,.2f}'.format(seg.amount) }}"></span>
+            {% endfor %}
+          </div>
+        </div>
+        <span class="month-bar-label">{{ bar.label }}</span>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
   {% else %}
   <p class="empty">No contributions recorded for this fiscal year yet.</p>
   {% endif %}

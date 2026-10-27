@@ -241,6 +241,40 @@ def test_dashboard_fund_pie_chart(client):
     assert b'$25.00' in page
     assert b'75.0% of year-to-date giving' in page
     assert b'25.0% of year-to-date giving' in page
+    assert b'Monthly giving' in page
+    assert b'month-bars' in page
+
+def test_dashboard_monthly_fund_bars(client):
+    login(client, 'sally@example.org')
+    with client.application.app_context():
+        general = db.session.scalar(db.select(Fund).filter_by(name='General Fund'))
+        missions = db.session.scalar(db.select(Fund).filter_by(name='Missions Fund'))
+        building = db.session.scalar(db.select(Fund).filter_by(name='Building Fund'))
+        db.session.add_all([
+            Gift(person_id=1, fiscal_year_id=1, fund_id=general.id, date=date(2026, 1, 15), amount=40, method='Check', entered_by_id=1),
+            Gift(person_id=1, fiscal_year_id=1, fund_id=missions.id, date=date(2026, 1, 20), amount=10, method='Cash', entered_by_id=1),
+            Gift(person_id=1, fiscal_year_id=1, fund_id=building.id, date=date(2026, 3, 4), amount=30, method='Online', entered_by_id=1),
+            Gift(person_id=1, fiscal_year_id=1, fund_id=general.id, date=date(2026, 3, 5), amount=5, method='Cash', entered_by_id=1, status='void'),
+        ])
+        db.session.commit()
+    page = client.get('/').data.decode()
+    assert 'Monthly giving' in page
+    assert "The amount above it is that month's total, stacked by fund." in page
+    assert page.count('class="month-bar"') == 12
+    assert page.count('class="month-bar-total"') == 12
+    assert 'class="month-bar-total">$50.00' in page
+    assert 'class="month-bar-total">$30.00' in page
+    assert 'class="month-bar-total">$0.00' in page
+    assert 'January 2026 total $50.00' in page
+    assert 'January 2026 · $50.00' in page
+    assert 'General Fund · $40.00' in page
+    assert 'Missions Fund · $10.00' in page
+    assert 'March 2026 · $30.00' in page
+    assert 'Building Fund · $30.00' in page
+    assert '#1b624c' in page
+    assert '#3d9b74' in page
+    assert '#c4a35a' in page
+    assert 'February 2026 · $0.00' in page
 
 def test_gift_entry_and_year_close(client):
     login(client, 'sally@example.org')

@@ -79,5 +79,16 @@ button:disabled{opacity:.55;cursor:not-allowed}
   .fund-legend{width:100%}
 }
 
+.month-chart{padding:4px 20px 22px;border-top:1px solid #e9e6df}
+.month-chart h3{margin:16px 0 2px;font-size:16px}
+.month-chart p{margin:0 0 14px;color:#6b7a72;font-size:13px}
+.month-bars{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(72px,1fr);gap:8px;align-items:end;height:220px;overflow-x:auto}
+.month-bar{display:grid;grid-template-rows:auto minmax(0,1fr) auto;height:100%;gap:6px;min-width:0}
+.month-bar-total{font-size:10px;font-weight:700;color:#1b624c;text-align:center;line-height:1.15;font-variant-numeric:tabular-nums;white-space:nowrap}
+.month-bar-stack{display:flex;flex-direction:column;justify-content:flex-end;height:100%;background:#eef3ef;border-radius:6px 6px 2px 2px;overflow:hidden}
+.month-bar-fill{display:flex;flex-direction:column-reverse;width:100%;min-height:0}
+.month-bar-seg{display:block;width:100%;min-height:2px}
+.month-bar-label{font-size:11px;color:#6b7a72;text-align:center;line-height:1.2}
+
 .restore-confirm{border:1px solid #d7b7b0;background:#fff8f6}
 .restore-summary{margin:0 0 16px;padding-left:18px;display:grid;gap:6px}
