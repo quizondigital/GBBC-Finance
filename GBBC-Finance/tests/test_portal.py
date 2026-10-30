@@ -53,6 +53,23 @@ def test_search_engines_are_blocked(client):
     assert 'noindex' in client.get('/login').headers['X-Robots-Tag']
     assert 'noindex' in client.get('/people').headers['X-Robots-Tag']
 
+def test_security_headers(client):
+    headers = client.get('/login').headers
+    assert "frame-ancestors 'none'" in headers['Content-Security-Policy']
+    assert "object-src 'none'" in headers['Content-Security-Policy']
+    assert 'Strict-Transport-Security' not in headers
+
+def test_login_next_rejects_offsite_redirects(client):
+    for bad in ('//evil.example', '/\\evil.example', '/\t/evil.example', 'https://evil.example'):
+        client.get('/login')
+        response = client.post(f'/login?next={bad}', data={'csrf_token': token(client), 'email': 'sally@example.org', 'password': 'correct-password'})
+        assert response.status_code == 302
+        assert 'evil.example' not in response.headers['Location']
+        client.post('/logout', data={'csrf_token': token(client)})
+    client.get('/login')
+    response = client.post('/login?next=/people', data={'csrf_token': token(client), 'email': 'sally@example.org', 'password': 'correct-password'})
+    assert response.headers['Location'].endswith('/people')
+
 def test_people_manager_role_permissions(client):
     with client.application.app_context():
         db.session.add(User(

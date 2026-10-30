@@ -205,6 +205,13 @@ def validate_signup_password(password):
     if not re.search(r'[^A-Za-z0-9]', password):
         raise ValueError('Password must include at least one special character.')
 
+def is_local_path(target):
+    # Browsers treat backslashes as slashes, so "/\evil.com" is an off-site link.
+    if not target.startswith('/') or target[1:2] in ('/', '\\'):
+        return False
+    parsed = urlparse(target.replace('\\', '/'))
+    return not parsed.scheme and not parsed.netloc and not any(ord(ch) < 32 for ch in target)
+
 def default_home_path(user):
     perms = PERMISSIONS.get(user.role, set())
     if 'overview' in perms:
@@ -1879,10 +1886,9 @@ def polish_giving_letter_pdf(pdf_path):
         c.drawRightString(page_w - 54, 18, GIVING_LETTER_VERSE_REF)
     c.save()
     overlay.seek(0)
-    page.merge_page(PdfReader(overlay).pages[0])
 
     writer = PdfWriter()
-    writer.add_page(page)
+    writer.add_page(page).merge_page(PdfReader(overlay).pages[0])
     polished = pdf_path.with_name(pdf_path.stem + '_polished.pdf')
     with polished.open('wb') as handle:
         writer.write(handle)
@@ -1984,6 +1990,13 @@ def create_app(test_config=None):
         response.headers['X-Frame-Options'] = 'DENY'
         response.headers['Referrer-Policy'] = 'same-origin'
         response.headers['X-Robots-Tag'] = 'noindex, nofollow, noarchive'
+        # Templates use inline scripts and handlers, so 'unsafe-inline' is required until they move to static files.
+        response.headers['Content-Security-Policy'] = (
+            "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+        )
+        if current_app.config['SESSION_COOKIE_SECURE']:
+            response.headers['Strict-Transport-Security'] = 'max-age=31536000'
         if request.path not in ('/login', '/signup'): response.headers['Cache-Control'] = 'no-store'
         return response
 
@@ -2063,7 +2076,7 @@ def create_app(test_config=None):
                 session['last_activity'] = utcnow().isoformat(timespec='seconds')
                 user.last_login = utcnow(); g.user = user; audit('login', 'user', user.id); db.session.commit()
                 target = request.args.get('next') or default_home_path(user)
-                if not (target.startswith('/') and not target.startswith('//')):
+                if not is_local_path(target):
                     target = default_home_path(user)
                 if target == '/' and 'overview' not in PERMISSIONS.get(user.role, set()):
                     target = default_home_path(user)
