@@ -1782,11 +1782,27 @@ def render_giving_letter_docx(person, year_label, amount_text):
     )
     return filled
 
+MACOS_SOFFICE = '/Applications/LibreOffice.app/Contents/MacOS/soffice'
+
+def find_soffice():
+    configured = os.environ.get('SOFFICE_PATH')
+    if configured:
+        return configured
+    found = __import__('shutil').which('soffice') or __import__('shutil').which('libreoffice')
+    if found:
+        return found
+    if os.path.exists(MACOS_SOFFICE):
+        return MACOS_SOFFICE
+    raise RuntimeError(
+        'LibreOffice is not installed or could not be found. Install it from libreoffice.org, '
+        'or set SOFFICE_PATH to the soffice executable.'
+    )
+
 def convert_docx_to_pdf(docx_path):
     out_dir = Path(current_app.instance_path) / 'statement_pdf'
     out_dir.mkdir(parents=True, exist_ok=True)
     result = __import__('subprocess').run(
-        ['soffice', '--headless', '--nologo', '--nofirststartwizard', '--convert-to', 'pdf', '--outdir', str(out_dir), str(docx_path)],
+        [find_soffice(), '--headless', '--nologo', '--nofirststartwizard', '--convert-to', 'pdf', '--outdir', str(out_dir), str(docx_path)],
         capture_output=True,
         text=True,
         check=False,
@@ -1944,6 +1960,8 @@ def create_app(test_config=None):
         SECRET_KEY=os.environ.get('SECRET_KEY', secrets.token_hex(32)),
         SQLALCHEMY_DATABASE_URI=os.environ.get('DATABASE_URL', 'sqlite:///gbbc_portal.db'),
         SQLALCHEMY_TRACK_MODIFICATIONS=False,
+        # PythonAnywhere MySQL drops connections idle for 300 seconds.
+        SQLALCHEMY_ENGINE_OPTIONS={'pool_recycle': 280, 'pool_pre_ping': True},
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SAMESITE='Lax',
         SESSION_COOKIE_SECURE=os.environ.get('COOKIE_SECURE', '0') == '1' or os.environ.get('PORTAL_PRODUCTION') == '1',
