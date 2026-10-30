@@ -46,6 +46,13 @@ def test_auth_and_user_fields(client):
     assert b'Church Leader' in client.get('/admin/roles').data
     assert b'People-Manager' in client.get('/admin/roles').data
 
+def test_search_engines_are_blocked(client):
+    robots = client.get('/robots.txt')
+    assert robots.status_code == 200
+    assert robots.data == b'User-agent: *\nDisallow: /\n'
+    assert 'noindex' in client.get('/login').headers['X-Robots-Tag']
+    assert 'noindex' in client.get('/people').headers['X-Robots-Tag']
+
 def test_people_manager_role_permissions(client):
     with client.application.app_context():
         db.session.add(User(

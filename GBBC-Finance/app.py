@@ -1983,6 +1983,7 @@ def create_app(test_config=None):
         response.headers['X-Content-Type-Options'] = 'nosniff'
         response.headers['X-Frame-Options'] = 'DENY'
         response.headers['Referrer-Policy'] = 'same-origin'
+        response.headers['X-Robots-Tag'] = 'noindex, nofollow, noarchive'
         if request.path not in ('/login', '/signup'): response.headers['Cache-Control'] = 'no-store'
         return response
 
@@ -2156,6 +2157,10 @@ def create_app(test_config=None):
         if not g.user:
             return ('', 401)
         return ('', 204)
+
+    @app.get('/robots.txt')
+    def robots_txt():
+        return ('User-agent: *\nDisallow: /\n', 200, {'Content-Type': 'text/plain; charset=utf-8'})
 
     @app.route('/')
     @require('overview')
