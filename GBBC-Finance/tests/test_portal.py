@@ -5,6 +5,7 @@ import re
 import pytest
 from pypdf import PdfReader
 from werkzeug.security import generate_password_hash
+from sqlalchemy import text
 from app import create_app, db, User, Person, Fund, FiscalYear, Gift, SignupRequest, ensure_schema
 
 def _hash(password):
@@ -1027,3 +1028,57 @@ def test_reconciliation_is_audited_and_role_limited(client):
     audit_page = client.get('/admin/audit').data
     assert b'Matched bank deposit' in audit_page
     assert 'Reconciled: No → Yes'.encode() in audit_page
+
+def test_person_names_are_title_cased_on_save_and_import(client):
+    login(client, 'sally@example.org')
+    created = client.post('/people/new', data={
+        'csrf_token': token(client),
+        'first_name': 'maria c',
+        'last_name': 'DE LA CRUZ',
+        'member_type': 'Member',
+    }, follow_redirects=True)
+    assert b'Person saved' in created.data
+    with client.application.app_context():
+        person = db.session.scalar(db.select(Person).filter_by(last_name='De La Cruz'))
+        assert person is not None
+        assert person.first_name == 'Maria C'
+        person_id = person.id
+    edited = client.post(f'/people/{person_id}/edit', data={
+        'csrf_token': token(client),
+        'first_name': 'JOSE MARIA',
+        'last_name': 'garcia-lopez',
+        'member_type': 'Member',
+        'audit_reason': 'Correct name casing',
+    }, follow_redirects=True)
+    assert b'Person saved' in edited.data
+    with client.application.app_context():
+        person = db.session.get(Person, person_id)
+        assert person.first_name == 'Jose Maria'
+        assert person.last_name == 'Garcia-Lopez'
+        db.session.execute(text("UPDATE person SET first_name = 'ada', last_name = 'member' WHERE id = 1"))
+        db.session.commit()
+        db.session.expire_all()
+    csv_body = (
+        'first_name,last_name,member_type,email,phone,address_line1,address_line2,city,state,zip_code\n'
+        'ada,member,Member,,,,,,,\n'
+        "mary ann,o'brien,Non-member,,,,,,,\n"
+    )
+    preview = client.post(
+        '/people/import',
+        data={'csrf_token': token(client), 'file': (io.BytesIO(csv_body.encode('utf-8')), 'names.csv')},
+        content_type='multipart/form-data',
+        follow_redirects=True,
+    )
+    assert b'Confirm people updates' in preview.data
+    assert b'Ada' in preview.data and b'Member' in preview.data
+    confirmed = client.post(
+        '/people/import/confirm',
+        data={'csrf_token': token(client), 'action': 'confirm'},
+        follow_redirects=True,
+    )
+    assert b'People import report' in confirmed.data
+    with client.application.app_context():
+        ada = db.session.get(Person, 1)
+        assert ada.first_name == 'Ada' and ada.last_name == 'Member'
+        mary = db.session.scalar(db.select(Person).filter_by(last_name="O'Brien"))
+        assert mary is not None and mary.first_name == 'Mary Ann'

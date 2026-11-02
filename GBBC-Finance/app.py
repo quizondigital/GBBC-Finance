@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo
 import click
 from flask import Flask, abort, current_app, flash, g, jsonify, redirect, render_template, request, send_file, session, url_for
 from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy import event
 from mailmerge import MailMerge
 from openpyxl import Workbook, load_workbook
 from pypdf import PdfReader, PdfWriter
@@ -107,6 +108,20 @@ class Person(db.Model):
     @property
     def address_display(self):
         return ', '.join(person_address_lines(self)) or ''
+
+def normalize_person_name(value):
+    """Title-case each word: first letter uppercase, the rest lowercase."""
+    if not isinstance(value, str):
+        return value
+    return value.strip().title()
+
+@event.listens_for(Person.first_name, 'set', retval=True)
+def _normalize_person_first_name(target, value, oldvalue, initiator):
+    return normalize_person_name(value)
+
+@event.listens_for(Person.last_name, 'set', retval=True)
+def _normalize_person_last_name(target, value, oldvalue, initiator):
+    return normalize_person_name(value)
 
 class FiscalYear(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -1402,8 +1417,8 @@ def find_person_for_people_import(first, last, email):
     return None
 
 def parse_people_import_fields(row):
-    first = (row.get('first_name') or '').strip()
-    last = (row.get('last_name') or '').strip()
+    first = normalize_person_name((row.get('first_name') or '').strip())
+    last = normalize_person_name((row.get('last_name') or '').strip())
     kind = (row.get('member_type') or '').strip()
     if not first or not last:
         raise ValueError('first name and last name are required')
