@@ -97,7 +97,7 @@
         <span class="circle">{{ gift.person.first_name[0] }}{{ gift.person.last_name[0] }}</span>
         <span>
           <strong>{{ gift.person.name }}</strong>
-          <small>{{ gift.fund.name }} · {{ gift.date.strftime('%b %-d, %Y') }}</small>
+          <small>{{ gift_fund_label(gift) }} · {{ gift.date.strftime('%b %-d, %Y') }}</small>
         </span>
         <b>${{ '{:,.2f}'.format(gift.amount) }}</b>
       </div>

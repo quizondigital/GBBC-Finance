@@ -1,4 +1,15 @@
 {# Shared pager: Back/Next, ellipsis pages, range summary, Go-to-page, results per page. #}
+{% macro preserve_inputs(preserve, skip_keys) -%}
+{%- for key, value in (preserve or {}).items() if key not in skip_keys and value is not none and value != '' -%}
+  {%- if value is iterable and value is not string -%}
+    {%- for item in value if item is not none and item != '' -%}
+    <input type="hidden" name="{{ key }}" value="{{ item }}">
+    {%- endfor -%}
+  {%- else -%}
+    <input type="hidden" name="{{ key }}" value="{{ value }}">
+  {%- endif -%}
+{%- endfor -%}
+{%- endmacro %}
 {% macro render_pagination(aria_label, page_url, pager, preserve=None) -%}
 {%- if pager and pager.total > 0 -%}
 <nav class="pager" aria-label="{{ aria_label }}">
@@ -26,11 +37,7 @@
     </div>
     <div class="pager-controls">
       <form class="pager-per-page" method="get" action="">
-        {% for key, value in (preserve or {}).items() %}
-          {% if key != 'per_page' and key != 'page' and value is not none and value != '' %}
-          <input type="hidden" name="{{ key }}" value="{{ value }}">
-          {% endif %}
-        {% endfor %}
+        {{ preserve_inputs(preserve, ['per_page', 'page']) }}
         <input type="hidden" name="page" value="1">
         <label class="pager-per-page-label" for="pager-per-page-{{ aria_label|replace(' ', '-')|lower }}">Result per page</label>
         <select id="pager-per-page-{{ aria_label|replace(' ', '-')|lower }}" class="pager-per-page-select" name="per_page" onchange="this.form.submit()">
@@ -41,11 +48,7 @@
       </form>
       {% if pager.total_pages > 1 %}
       <form class="pager-goto" method="get" action="">
-        {% for key, value in (preserve or {}).items() %}
-          {% if key != 'page' and value is not none and value != '' %}
-          <input type="hidden" name="{{ key }}" value="{{ value }}">
-          {% endif %}
-        {% endfor %}
+        {{ preserve_inputs(preserve, ['page']) }}
         {% if not preserve or not preserve.get('per_page') %}
         <input type="hidden" name="per_page" value="{{ pager.per_page }}">
         {% endif %}

@@ -49,21 +49,23 @@ US_STATES = (
 )
 US_STATE_CODES = {code for code, _ in US_STATES}
 DEFAULT_FUNDS = ('General Fund', 'Missions Fund', 'Building Fund', 'Benevolence Fund')
+GIFT_METHODS = ('Check', 'Cash', 'Online', 'Other')
 FUND_ALIASES = {
     'Missions': 'Missions Fund',
     'Benevolence': 'Benevolence Fund',
 }
 PERMISSIONS = {
-    'Super Admin': {'overview', 'people_view', 'people_write', 'gift_view', 'gift_write', 'reports', 'detail_reports', 'statements', 'users', 'roles', 'fiscal', 'feedback', 'settings', 'feedback_review', 'audit_view', 'utilities', 'backup'},
+    'Super Admin': {'overview', 'people_view', 'people_write', 'gift_view', 'gift_write', 'subfunds', 'reports', 'detail_reports', 'statements', 'users', 'roles', 'fiscal', 'feedback', 'settings', 'feedback_review', 'audit_view', 'utilities', 'backup'},
     'System Administrator': {'overview', 'people_view', 'reports', 'users', 'roles', 'fiscal', 'feedback', 'settings', 'feedback_review', 'audit_view', 'utilities', 'backup'},
-    'Finance Staff': {'overview', 'people_view', 'people_write', 'gift_view', 'gift_write', 'reports', 'detail_reports', 'statements', 'feedback', 'utilities'},
+    'Finance Staff': {'overview', 'people_view', 'people_write', 'gift_view', 'gift_write', 'subfunds', 'reports', 'detail_reports', 'statements', 'feedback', 'utilities'},
     'Church Leader': {'overview', 'people_view', 'reports', 'feedback', 'utilities'},
     'People-Manager': {'overview', 'people_view', 'people_write', 'feedback'},
     'People Viewer': {'people_view'},
 }
 PAGE_MATRIX = [
     ('Dashboard', 'overview'), ('People directory', 'people_view'), ('Create and edit people', 'people_write'),
-    ('Contribution detail', 'gift_view'), ('Record and correct gifts', 'gift_write'), ('Aggregate giving reports', 'reports'),
+    ('Contribution detail', 'gift_view'), ('Record and correct gifts', 'gift_write'),
+    ('Sub-funds within each fund', 'subfunds'), ('Aggregate giving reports', 'reports'),
     ('Individual giving reports', 'detail_reports'), ('Giving statements', 'statements'),
     ('Utilities', 'utilities'),
     ('User administration and signup approvals', 'users'), ('Role permissions', 'roles'), ('Fiscal-year administration', 'fiscal'),
@@ -134,6 +136,16 @@ class Fund(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(100), unique=True, nullable=False)
     active = db.Column(db.Boolean, default=True, nullable=False)
+    subfunds = db.relationship('SubFund', back_populates='fund', order_by='SubFund.name')
+
+class SubFund(db.Model):
+    __tablename__ = 'sub_fund'
+    id = db.Column(db.Integer, primary_key=True)
+    fund_id = db.Column(db.Integer, db.ForeignKey('fund.id'), nullable=False, index=True)
+    name = db.Column(db.String(100), nullable=False)
+    active = db.Column(db.Boolean, default=True, nullable=False)
+    fund = db.relationship('Fund', back_populates='subfunds')
+    __table_args__ = (db.UniqueConstraint('fund_id', 'name', name='uq_sub_fund_name'),)
 
 class Gift(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -153,6 +165,24 @@ class Gift(db.Model):
     entered_by_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     entered_by = db.relationship('User')
     created_at = db.Column(db.DateTime, default=lambda: utcnow(), nullable=False)
+    allocations = db.relationship(
+        'GiftAllocation',
+        cascade='all, delete-orphan',
+        order_by='GiftAllocation.sort_order',
+        back_populates='gift',
+    )
+
+class GiftAllocation(db.Model):
+    __tablename__ = 'gift_allocation'
+    id = db.Column(db.Integer, primary_key=True)
+    gift_id = db.Column(db.Integer, db.ForeignKey('gift.id'), nullable=False, index=True)
+    fund_id = db.Column(db.Integer, db.ForeignKey('fund.id'), nullable=False)
+    subfund_id = db.Column(db.Integer, db.ForeignKey('sub_fund.id'), nullable=True)
+    amount = db.Column(db.Numeric(12, 2), nullable=False)
+    sort_order = db.Column(db.Integer, default=0, nullable=False)
+    gift = db.relationship('Gift', back_populates='allocations')
+    fund = db.relationship('Fund')
+    subfund = db.relationship('SubFund')
 
 class Feedback(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -570,7 +600,7 @@ def build_year_backup_workbook(year):
     ws_gifts = wb.create_sheet('Contributions')
     ws_gifts.append([
         'id', 'person_id', 'person_name', 'fiscal_year', 'fund', 'date', 'amount', 'method',
-        'reference', 'note', 'status', 'reconciled', 'entered_by_email', 'created_at',
+        'reference', 'note', 'status', 'reconciled', 'entered_by_email', 'created_at', 'allocations',
     ])
     for gift in gifts:
         ws_gifts.append([
@@ -579,6 +609,7 @@ def build_year_backup_workbook(year):
             gift.note or '', gift.status, 'yes' if gift.reconciled else 'no',
             gift.entered_by.email if gift.entered_by else '',
             gift.created_at.isoformat(sep=' ', timespec='seconds') if gift.created_at else '',
+            allocations_backup_json(gift),
         ])
 
     ws_users = wb.create_sheet('Users')
@@ -764,12 +795,14 @@ def apply_year_backup_restore(payload, year, actor):
         )
         if gift.status not in ('active', 'void'):
             gift.status = 'active'
-        if gift.method not in ('Check', 'Cash', 'Online', 'Other'):
+        if gift.method not in GIFT_METHODS:
             gift.method = 'Other'
         created_at = _cell_datetime(row.get('created_at'))
         if created_at:
             gift.created_at = created_at
         db.session.add(gift)
+        db.session.flush()
+        replace_gift_allocations(gift, allocations_from_backup_row(row, fund, amount))
     db.session.flush()
 
     # Replace audit rows that fall in the fiscal-year window
@@ -940,6 +973,20 @@ def ensure_schema():
             if not db.session.scalar(db.select(Fund.id).filter_by(name=name)):
                 db.session.add(Fund(name=name))
         db.session.commit()
+    backfill_gift_allocations()
+
+def backfill_gift_allocations():
+    """Give older single-fund gifts one allocation row so reports can sum splits."""
+    missing_ids = db.session.scalars(
+        db.select(Gift.id).outerjoin(GiftAllocation, GiftAllocation.gift_id == Gift.id).where(GiftAllocation.id.is_(None))
+    ).all()
+    for gift_id in missing_ids:
+        gift = db.session.get(Gift, gift_id)
+        if gift is None:
+            continue
+        db.session.add(GiftAllocation(gift_id=gift.id, fund_id=gift.fund_id, amount=gift.amount, sort_order=0))
+    if missing_ids:
+        db.session.commit()
 
 def funds_in_display_order(funds):
     rank = {name: index for index, name in enumerate(DEFAULT_FUNDS)}
@@ -966,20 +1013,309 @@ def iter_month_starts(start, end):
         else:
             cursor = date(cursor.year, cursor.month + 1, 1)
 
+def allocation_fund_rows(gift):
+    """Return (fund id, fund name, label, amount) rolled up to each main fund."""
+    allocations = list(gift.allocations or [])
+    if allocations:
+        groups = []
+        indexes = {}
+        for alloc in allocations:
+            if alloc.fund is None:
+                continue
+            if alloc.fund_id not in indexes:
+                indexes[alloc.fund_id] = len(groups)
+                groups.append({
+                    'fund_id': alloc.fund_id,
+                    'name': alloc.fund.name,
+                    'amount': Decimal('0'),
+                    'subs': [],
+                })
+            group = groups[indexes[alloc.fund_id]]
+            group['amount'] += alloc.amount or Decimal('0')
+            if alloc.subfund is not None:
+                group['subs'].append(alloc.subfund.name)
+        rows = []
+        for group in groups:
+            label = group['name']
+            if group['subs']:
+                label = f"{group['name']} ({', '.join(group['subs'])})"
+            rows.append((group['fund_id'], group['name'], label, group['amount']))
+        return rows
+    if gift.fund is None:
+        return []
+    return [(gift.fund_id, gift.fund.name, gift.fund.name, gift.amount or Decimal('0'))]
+
+def statement_lines_for_funds(gift, fund_ids):
+    """Itemized lines, limited to the selected main funds when a fund filter is set."""
+    selected = set(fund_ids or [])
+    if not selected:
+        return gift_statement_lines(gift)
+    allocations = list(gift.allocations or [])
+    if allocations:
+        lines = []
+        for alloc in allocations:
+            if alloc.fund is None or alloc.fund_id not in selected:
+                continue
+            label = alloc.fund.name
+            if alloc.subfund is not None:
+                label = f'{label} — {alloc.subfund.name}'
+            lines.append((gift.date, label, alloc.amount))
+        return lines
+    if gift.fund is None or gift.fund_id not in selected:
+        return []
+    return [(gift.date, gift.fund.name, gift.amount)]
+
+def gift_fund_amounts(gift):
+    """Yield (fund name, amount) lines. Sub-funds roll up to their main fund."""
+    allocations = list(gift.allocations or [])
+    if allocations:
+        for alloc in allocations:
+            if alloc.fund is not None:
+                yield alloc.fund.name, alloc.amount or Decimal('0')
+        return
+    if gift.fund is not None:
+        yield gift.fund.name, gift.amount or Decimal('0')
+
+def gift_fund_label(gift):
+    allocations = list(gift.allocations or [])
+    if not allocations:
+        return gift.fund.name if gift.fund is not None else ''
+    groups = []
+    indexes = {}
+    for alloc in allocations:
+        if alloc.fund_id not in indexes:
+            indexes[alloc.fund_id] = len(groups)
+            groups.append({'name': alloc.fund.name, 'subs': []})
+        if alloc.subfund is not None:
+            groups[indexes[alloc.fund_id]]['subs'].append(alloc.subfund.name)
+    parts = []
+    for group in groups:
+        if group['subs']:
+            parts.append(f"{group['name']} ({', '.join(group['subs'])})")
+        else:
+            parts.append(group['name'])
+    return ', '.join(parts)
+
+def gift_statement_lines(gift):
+    allocations = list(gift.allocations or [])
+    if not allocations:
+        return [(gift.date, gift.fund.name if gift.fund is not None else '', gift.amount)]
+    lines = []
+    for alloc in allocations:
+        label = alloc.fund.name
+        if alloc.subfund is not None:
+            label = f'{label} — {alloc.subfund.name}'
+        lines.append((gift.date, label, alloc.amount))
+    return lines
+
+def replace_gift_allocations(gift, stored):
+    gift.allocations.clear()
+    gift.fund = stored[0][0]
+    for index, (fund, subfund, amount) in enumerate(stored):
+        gift.allocations.append(GiftAllocation(fund=fund, subfund=subfund, amount=amount, sort_order=index))
+
+def describe_allocations(stored):
+    groups = []
+    indexes = {}
+    for fund, subfund, amount in stored:
+        if fund.id not in indexes:
+            indexes[fund.id] = len(groups)
+            groups.append({'fund': fund, 'amount': Decimal('0'), 'subs': []})
+        group = groups[indexes[fund.id]]
+        group['amount'] += amount
+        if subfund is not None:
+            group['subs'].append((subfund, amount))
+    parts = []
+    for group in groups:
+        if group['subs']:
+            detail = ', '.join(f'{sub.name} ${amt:.2f}' for sub, amt in group['subs'])
+            parts.append(f"{group['fund'].name} ${group['amount']:.2f} ({detail})")
+        else:
+            parts.append(f"{group['fund'].name} ${group['amount']:.2f}")
+    return '; '.join(parts)
+
+def allocations_backup_json(gift):
+    rows = []
+    allocations = list(gift.allocations or [])
+    if allocations:
+        for alloc in allocations:
+            rows.append({
+                'fund': alloc.fund.name,
+                'subfund': alloc.subfund.name if alloc.subfund else '',
+                'amount': f'{alloc.amount:.2f}',
+            })
+    else:
+        rows.append({'fund': gift.fund.name, 'subfund': '', 'amount': f'{gift.amount:.2f}'})
+    return json.dumps(rows)
+
+def allocations_from_backup_row(row, fallback_fund, fallback_amount):
+    raw = _cell_str(row.get('allocations'))
+    if not raw:
+        return [(fallback_fund, None, fallback_amount)]
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError('Contribution allocations could not be read.') from exc
+    if not isinstance(data, list) or not data:
+        return [(fallback_fund, None, fallback_amount)]
+    stored = []
+    for item in data:
+        if not isinstance(item, dict):
+            raise ValueError('Contribution allocations could not be read.')
+        fund = resolve_fund_name(_cell_str(item.get('fund')))
+        sub_name = _cell_str(item.get('subfund'))
+        subfund = None
+        if sub_name:
+            subfund = db.session.scalar(db.select(SubFund).where(SubFund.fund_id == fund.id, SubFund.name == sub_name))
+            if subfund is None:
+                subfund = SubFund(fund=fund, name=sub_name[:100], active=True)
+                db.session.add(subfund)
+                db.session.flush()
+        stored.append((fund, subfund, _cell_amount(item.get('amount'))))
+    return stored
+
+def normalize_allocation_state(parsed_state):
+    if not isinstance(parsed_state, list):
+        return None
+    cleaned = []
+    for block in parsed_state:
+        if not isinstance(block, dict):
+            continue
+        try:
+            fund_id = int(block.get('fund_id') or 0)
+        except (TypeError, ValueError):
+            continue
+        subs = []
+        for line in block.get('subfunds') or []:
+            if not isinstance(line, dict):
+                continue
+            try:
+                subfund_id = int(line.get('subfund_id') or 0)
+            except (TypeError, ValueError):
+                subfund_id = 0
+            subs.append({'subfund_id': subfund_id, 'amount': '' if line.get('amount') is None else line.get('amount')})
+        cleaned.append({'fund_id': fund_id, 'amount': '' if block.get('amount') is None else block.get('amount'), 'subfunds': subs})
+    return cleaned or None
+
+def allocation_state_for_gift(gift, default_fund_id):
+    allocations = list(gift.allocations or []) if gift is not None else []
+    if gift is None or not allocations:
+        fund_id = gift.fund_id if gift is not None else default_fund_id
+        amount = f'{gift.amount:.2f}' if gift is not None else ''
+        return [{'fund_id': fund_id, 'amount': amount, 'subfunds': []}]
+    groups = []
+    indexes = {}
+    for alloc in allocations:
+        if alloc.fund_id not in indexes:
+            indexes[alloc.fund_id] = len(groups)
+            groups.append({'fund_id': alloc.fund_id, 'amount': Decimal('0'), 'subfunds': []})
+        group = groups[indexes[alloc.fund_id]]
+        group['amount'] += alloc.amount or Decimal('0')
+        if alloc.subfund_id is not None:
+            group['subfunds'].append({'subfund_id': alloc.subfund_id, 'amount': f'{alloc.amount:.2f}'})
+    for group in groups:
+        group['amount'] = f'{group["amount"]:.2f}'
+    return groups
+
+def fund_catalog_for_form():
+    funds = funds_in_display_order(db.session.scalars(db.select(Fund).where(Fund.active.is_(True))).all())
+    catalog = []
+    for fund in funds:
+        catalog.append({
+            'id': fund.id,
+            'name': fund.name,
+            'subfunds': [{'id': sub.id, 'name': sub.name} for sub in fund.subfunds if sub.active],
+        })
+    return catalog
+
+def parse_contribution_allocations(form, total):
+    """Read a fund/sub-fund split. A missing split falls back to the single fund_id field."""
+    raw = (form.get('allocations_json') or '').strip()
+    if not raw:
+        try:
+            fund_id = int(form.get('fund_id') or 0)
+        except (TypeError, ValueError):
+            fund_id = 0
+        fund = db.session.get(Fund, fund_id) if fund_id else None
+        if not fund or not fund.active:
+            raise ValueError('Choose an active person, fund, and open fiscal year.')
+        return [(fund, None, total)]
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        raise ValueError('Fund split could not be read. Refresh the page and try again.')
+    if not isinstance(payload, list) or not payload:
+        raise ValueError('Add at least one fund.')
+    stored = []
+    seen_funds = set()
+    fund_sum = Decimal('0')
+    for block in payload:
+        if not isinstance(block, dict):
+            raise ValueError('Add at least one fund.')
+        try:
+            fund_id = int(block.get('fund_id') or 0)
+        except (TypeError, ValueError):
+            raise ValueError('Choose a fund.')
+        fund = db.session.get(Fund, fund_id)
+        if not fund or not fund.active:
+            raise ValueError('Choose an active fund.')
+        if fund.id in seen_funds:
+            raise ValueError(f'{fund.name} is listed more than once.')
+        seen_funds.add(fund.id)
+        try:
+            fund_amount = parse_amount(str(block.get('amount')))
+        except ValueError:
+            raise ValueError(f'Enter an amount for {fund.name}.')
+        subs = block.get('subfunds') or []
+        if not isinstance(subs, list):
+            raise ValueError(f'Choose sub-funds for {fund.name}.')
+        if not subs:
+            stored.append((fund, None, fund_amount))
+            fund_sum += fund_amount
+            continue
+        seen_subs = set()
+        sub_sum = Decimal('0')
+        sub_rows = []
+        for line in subs:
+            if not isinstance(line, dict):
+                raise ValueError(f'Choose a sub-fund of {fund.name}.')
+            try:
+                subfund_id = int(line.get('subfund_id') or 0)
+            except (TypeError, ValueError):
+                raise ValueError(f'Choose a sub-fund of {fund.name}.')
+            subfund = db.session.get(SubFund, subfund_id)
+            if subfund is None or subfund.fund_id != fund.id:
+                raise ValueError(f'Choose a sub-fund of {fund.name}.')
+            if not subfund.active:
+                raise ValueError(f'{subfund.name} is no longer active.')
+            if subfund.id in seen_subs:
+                raise ValueError(f'{subfund.name} is listed more than once under {fund.name}.')
+            seen_subs.add(subfund.id)
+            try:
+                line_amount = parse_amount(str(line.get('amount')))
+            except ValueError:
+                raise ValueError(f'Enter an amount for {subfund.name}.')
+            sub_rows.append((fund, subfund, line_amount))
+            sub_sum += line_amount
+        if sub_sum != fund_amount:
+            raise ValueError(f'Sub-funds for {fund.name} must add up to ${fund_amount:.2f}.')
+        stored.extend(sub_rows)
+        fund_sum += fund_amount
+    if fund_sum != total:
+        raise ValueError(f'Fund amounts must add up to the total gift amount (${total:.2f}).')
+    return stored
+
 def fund_giving_slices(fiscal_year_id=None):
     """Active gift totals by fund for the overview pie chart."""
-    amount_col = db.func.coalesce(db.func.sum(Gift.amount), 0)
-    query = (
-        db.select(Fund.name, amount_col)
-        .join(Gift, Gift.fund_id == Fund.id)
-        .where(Gift.status == 'active')
-        .group_by(Fund.id, Fund.name)
-        .having(amount_col > 0)
-        .order_by(amount_col.desc(), Fund.name.asc())
-    )
+    query = db.select(Gift).where(Gift.status == 'active')
     if fiscal_year_id is not None:
         query = query.where(Gift.fiscal_year_id == fiscal_year_id)
-    rows = db.session.execute(query).all()
+    totals = {}
+    for gift in db.session.scalars(query).all():
+        for name, amount in gift_fund_amounts(gift):
+            if amount and amount > 0:
+                totals[name] = totals.get(name, Decimal('0')) + amount
+    rows = sorted(totals.items(), key=lambda item: (-item[1], item[0]))
     total = sum((amount or Decimal('0')) for _, amount in rows)
     if total <= 0:
         return [], Decimal('0')
@@ -1015,17 +1351,16 @@ def monthly_giving_bars(fiscal_year, fund_slices):
     names = sorted(colors, key=lambda name: (rank.get(name, len(DEFAULT_FUNDS)), name.lower()))
     months = list(iter_month_starts(fiscal_year.start_date, fiscal_year.end_date))
     spans_years = months[0].year != months[-1].year if months else False
-    year_col = db.extract('year', Gift.date)
-    month_col = db.extract('month', Gift.date)
-    rows = db.session.execute(
-        db.select(year_col, month_col, Fund.name, db.func.coalesce(db.func.sum(Gift.amount), 0))
-        .join(Fund, Gift.fund_id == Fund.id)
-        .where(Gift.status == 'active', Gift.fiscal_year_id == fiscal_year.id)
-        .group_by(year_col, month_col, Fund.id, Fund.name)
+    gifts = db.session.scalars(
+        db.select(Gift).where(Gift.status == 'active', Gift.fiscal_year_id == fiscal_year.id)
     ).all()
     totals = {}
-    for year, month, name, amount in rows:
-        totals[(int(year), int(month), name)] = amount or Decimal('0')
+    for gift in gifts:
+        for name, amount in gift_fund_amounts(gift):
+            if not amount or amount <= 0 or name not in colors:
+                continue
+            key = (gift.date.year, gift.date.month, name)
+            totals[key] = totals.get(key, Decimal('0')) + amount
     bars = []
     max_total = Decimal('0')
     for month_date in months:
@@ -1093,7 +1428,7 @@ def parse_gift_import_row(row, cache):
     person = resolve_import_person(row)
     fund = resolve_fund_name(row.get('fund') or '')
     method = (row.get('method') or '').strip()
-    if method not in ('Check', 'Cash', 'Online', 'Other'):
+    if method not in GIFT_METHODS:
         raise ValueError('method must be Check, Cash, Online, or Other')
     try:
         gift_date = date.fromisoformat((row.get('date') or '').strip())
@@ -1939,10 +2274,15 @@ def build_itemized_statement_pdf(person, gifts, church_name, year_label, amount_
             pdf.showPage()
             y = start_page()
             pdf.setFont('Helvetica', 10)
-        pdf.drawString(left, y, gift.date.isoformat())
-        pdf.drawString(140, y, gift.fund.name[:50])
-        pdf.drawRightString(left + width, y, f'${gift.amount:,.2f}')
-        y -= 18
+        for gift_date, label, line_amount in gift_statement_lines(gift):
+            if y < 72:
+                pdf.showPage()
+                y = start_page()
+                pdf.setFont('Helvetica', 10)
+            pdf.drawString(left, y, gift_date.isoformat())
+            pdf.drawString(140, y, label[:50])
+            pdf.drawRightString(left + width, y, f'${line_amount:,.2f}')
+            y -= 18
     pdf.setFont('Helvetica-Bold', 11)
     pdf.drawRightString(left + width, max(56, y - 10), f'Total: {amount_text}')
     pdf.save(); out.seek(0)
@@ -2053,6 +2393,7 @@ def create_app(test_config=None):
     def context():
         def can(permission): return bool(g.user and permission in PERMISSIONS.get(g.user.role, set()))
         return {
+            'gift_fund_label': gift_fund_label,
             'current_user': g.user,
             'inactivity_timeout_seconds': current_app.config.get('INACTIVITY_TIMEOUT_SECONDS', INACTIVITY_TIMEOUT_SECONDS),
             'can': can,
@@ -2477,11 +2818,13 @@ def create_app(test_config=None):
                         if find_duplicate_gift(item['person'].id, item['date'], item['amount'], item['fund'].id, item['method'], item['reference']):
                             raise ValueError('duplicate of an existing contribution')
                         seen.add(dup_key)
-                        db.session.add(Gift(
+                        gift = Gift(
                             person=item['person'], fund=item['fund'], fiscal_year=item['year'],
                             date=item['date'], amount=item['amount'], method=item['method'],
                             reference=item['reference'], note=item['note'], entered_by_id=g.user.id,
-                        ))
+                        )
+                        db.session.add(gift)
+                        replace_gift_allocations(gift, [(item['fund'], None, item['amount'])])
                         successes += 1
                     except ValueError as exc:
                         failures.append({'row': index, 'reason': str(exc), 'preview': preview, 'row_data': row})
@@ -2597,56 +2940,83 @@ def create_app(test_config=None):
         funds = funds_in_display_order(db.session.scalars(db.select(Fund).filter_by(active=True)).all())
         default_fund = next((fund for fund in funds if fund.name == 'General Fund'), funds[0] if funds else None)
         selected_person = gift.person if gift else None
+        allocation_state = allocation_state_for_gift(gift, default_fund.id if default_fund else None)
+        original_gift = gift
         if request.method == 'POST':
             try:
                 year = db.session.get(FiscalYear, int(request.form['fiscal_year_id']))
                 person = db.session.get(Person, int(request.form['person_id']))
-                fund = db.session.get(Fund, int(request.form['fund_id']))
-                gift_date = date.fromisoformat(request.form['date']); amount = parse_amount(request.form['amount'])
-                if not year or not person or not fund or not year.is_open: raise ValueError('Choose an active person, fund, and open fiscal year.')
+                gift_date = date.fromisoformat(request.form['date'])
+                amount = parse_amount(request.form['amount'])
+                method = request.form.get('method', '').strip()
+                if not year or not person or not year.is_open:
+                    raise ValueError('Choose an active person, fund, and open fiscal year.')
                 if not person.active and (gift is None or gift.person_id != person.id):
                     raise ValueError('Choose an active person, fund, and open fiscal year.')
-                if not (year.start_date <= gift_date <= year.end_date): raise ValueError('Date must fall within the selected fiscal year.')
-                if gift and not gift.fiscal_year.is_open: raise ValueError('Closed-year gifts cannot be edited.')
+                if not (year.start_date <= gift_date <= year.end_date):
+                    raise ValueError('Date must fall within the selected fiscal year.')
+                if gift and not gift.fiscal_year.is_open:
+                    raise ValueError('Closed-year gifts cannot be edited.')
+                if method not in GIFT_METHODS:
+                    raise ValueError('Choose a payment method.')
+                stored = parse_contribution_allocations(request.form, amount)
                 reason = require_audit_reason(required=gift is not None)
                 creating = gift is None
                 before = None
                 if not creating:
                     before = {
-                        'Contributor': gift.person.name, 'Fund': gift.fund.name, 'Amount': gift.amount,
+                        'Contributor': gift.person.name, 'Fund': gift_fund_label(gift), 'Amount': gift.amount,
                         'Date': gift.date, 'Method': gift.method, 'Reference': gift.reference, 'Note': gift.note,
                         'Fiscal year': gift.fiscal_year.name,
                     }
                 if creating:
-                    gift = Gift(entered_by_id=g.user.id); db.session.add(gift)
-                gift.person = person; gift.fund = fund; gift.fiscal_year = year; gift.date = gift_date; gift.amount = amount
-                gift.method = request.form.get('method', '').strip(); gift.reference = request.form.get('reference', '').strip()
+                    gift = Gift(entered_by_id=g.user.id, fund=stored[0][0])
+                    db.session.add(gift)
+                gift.person = person
+                gift.fiscal_year = year
+                gift.date = gift_date
+                gift.amount = amount
+                gift.method = method
+                gift.reference = request.form.get('reference', '').strip()
                 gift.note = request.form.get('note', '').strip()
-                if gift.method not in ('Check', 'Cash', 'Online', 'Other'): raise ValueError('Choose a payment method.')
+                replace_gift_allocations(gift, stored)
                 db.session.flush()
+                split_text = describe_allocations(stored)
                 if creating:
                     note_text = gift.note or '(empty)'
                     audit(
                         'create',
                         'gift',
                         gift.id,
-                        summary=f'{person.name} · {fund.name} · ${amount} · {note_text}',
-                        details=f'Contributor: {person.name}\nFund: {fund.name}\nAmount: {amount}\nNote: {note_text}',
+                        summary=f'{person.name} · {split_text} · {note_text}'[:255],
+                        details=f'Contributor: {person.name}\nAmount: {amount}\nSplit: {split_text}\nNote: {note_text}',
                     )
                 else:
                     after = {
-                        'Contributor': gift.person.name, 'Fund': gift.fund.name, 'Amount': gift.amount,
+                        'Contributor': gift.person.name, 'Fund': gift_fund_label(gift), 'Amount': gift.amount,
                         'Date': gift.date, 'Method': gift.method, 'Reference': gift.reference, 'Note': gift.note,
                         'Fiscal year': gift.fiscal_year.name,
                     }
                     changes = [(label, before[label], after[label]) for label in before]
                     audit('update', 'gift', gift.id, summary=person.name, reason=reason, changes=changes)
                 db.session.commit()
-                flash('Contribution saved.', 'success'); return redirect(url_for('contributions'))
+                flash('Contribution saved.', 'success')
+                return redirect(url_for('contributions'))
             except (ValueError, KeyError) as exc:
+                db.session.rollback()
+                gift = original_gift
                 flash(str(exc), 'error')
                 person_id = request.form.get('person_id', type=int)
                 selected_person = db.session.get(Person, person_id) if person_id else selected_person
+                posted = (request.form.get('allocations_json') or '').strip()
+                if posted:
+                    try:
+                        parsed_state = json.loads(posted)
+                    except json.JSONDecodeError:
+                        parsed_state = None
+                    normalized = normalize_allocation_state(parsed_state)
+                    if normalized:
+                        allocation_state = normalized
         return render_template(
             'gift_form.html',
             gift=gift,
@@ -2654,8 +3024,88 @@ def create_app(test_config=None):
             funds=funds,
             selected_person=selected_person,
             default_fund_id=default_fund.id if default_fund else None,
+            allocation_state=allocation_state,
+            allocation_json=json.dumps(allocation_state),
+            fund_catalog=fund_catalog_for_form(),
             people_search_url=url_for('people_search'),
         )
+
+    @app.route('/subfunds', methods=['GET', 'POST'])
+    @require('subfunds')
+    def subfunds():
+        if request.method == 'POST':
+            action = (request.form.get('action') or '').strip()
+            try:
+                if action == 'create':
+                    fund = db.session.get(Fund, request.form.get('fund_id', type=int))
+                    name = (request.form.get('name') or '').strip()
+                    if not fund or not fund.active:
+                        raise ValueError('Choose a fund.')
+                    if not name:
+                        raise ValueError('Enter a sub-fund name.')
+                    if len(name) > 100:
+                        raise ValueError('Sub-fund name must be 100 characters or fewer.')
+                    existing = db.session.scalar(
+                        db.select(SubFund).where(SubFund.fund_id == fund.id, db.func.lower(SubFund.name) == name.lower())
+                    )
+                    if existing:
+                        raise ValueError(f'{fund.name} already has a sub-fund named {existing.name}.')
+                    sub = SubFund(fund=fund, name=name, active=True)
+                    db.session.add(sub)
+                    db.session.flush()
+                    audit('create', 'subfund', sub.id, summary=f'{fund.name} / {name}')
+                    db.session.commit()
+                    flash(f'Added {name} under {fund.name}.', 'success')
+                elif action == 'update':
+                    sub = db.get_or_404(SubFund, request.form.get('subfund_id', type=int))
+                    name = (request.form.get('name') or '').strip()
+                    if not name:
+                        raise ValueError('Enter a sub-fund name.')
+                    if len(name) > 100:
+                        raise ValueError('Sub-fund name must be 100 characters or fewer.')
+                    if name == sub.name:
+                        flash('No changes to save.', 'success')
+                        return redirect(url_for('subfunds'))
+                    existing = db.session.scalar(
+                        db.select(SubFund).where(
+                            SubFund.fund_id == sub.fund_id,
+                            db.func.lower(SubFund.name) == name.lower(),
+                            SubFund.id != sub.id,
+                        )
+                    )
+                    if existing:
+                        raise ValueError(f'{sub.fund.name} already has a sub-fund named {existing.name}.')
+                    reason = require_audit_reason()
+                    old = sub.name
+                    sub.name = name
+                    audit(
+                        'update', 'subfund', sub.id, summary=f'{sub.fund.name} / {name}', reason=reason,
+                        changes=[('Name', old, name)],
+                    )
+                    db.session.commit()
+                    flash(f'Renamed {old} to {name}.', 'success')
+                elif action == 'delete':
+                    sub = db.get_or_404(SubFund, request.form.get('subfund_id', type=int))
+                    reason = require_audit_reason()
+                    used = db.session.scalar(
+                        db.select(db.func.count()).select_from(GiftAllocation).where(GiftAllocation.subfund_id == sub.id)
+                    ) or 0
+                    if used:
+                        raise ValueError(f'Cannot delete {sub.name} because contribution records use it.')
+                    label = f'{sub.fund.name} / {sub.name}'
+                    sub_id = sub.id
+                    db.session.delete(sub)
+                    audit('delete', 'subfund', sub_id, summary=label, reason=reason)
+                    db.session.commit()
+                    flash(f'Deleted {label}.', 'success')
+                else:
+                    raise ValueError('Unknown action.')
+            except ValueError as exc:
+                db.session.rollback()
+                flash(str(exc), 'error')
+            return redirect(url_for('subfunds'))
+        funds = funds_in_display_order(db.session.scalars(db.select(Fund).where(Fund.active.is_(True))).all())
+        return render_template('subfunds.html', funds=funds)
 
     @app.post('/contributions/<int:gift_id>/void')
     @require('gift_write')
@@ -2685,7 +3135,7 @@ def create_app(test_config=None):
             flash(str(exc), 'error')
             return redirect(url_for('contributions'))
         summary = f'{gift.person.name} ${gift.amount} on {gift.date.isoformat()}'
-        details = f'Contributor: {gift.person.name}\nFund: {gift.fund.name}\nAmount: {gift.amount}\nNote: {gift.note or "(empty)"}'
+        details = f'Contributor: {gift.person.name}\nFund: {gift_fund_label(gift)}\nAmount: {gift.amount}\nNote: {gift.note or "(empty)"}'
         db.session.delete(gift)
         audit('delete', 'gift', gift_id, summary=summary, reason=reason, details=details)
         db.session.commit()
@@ -2712,12 +3162,46 @@ def create_app(test_config=None):
         flash('Reconciliation status updated.', 'success')
         return redirect(url_for('contributions'))
 
+    def selected_report_methods():
+        chosen = []
+        for raw in request.args.getlist('method'):
+            method = raw.strip()
+            if not method:
+                continue
+            if method not in GIFT_METHODS:
+                abort(400)
+            if method not in chosen:
+                chosen.append(method)
+        return chosen
+
+    def selected_report_fund_ids():
+        chosen = []
+        for raw in request.args.getlist('fund_id'):
+            text_id = raw.strip()
+            if not text_id:
+                continue
+            try:
+                fund_id = int(text_id)
+            except ValueError:
+                abort(400)
+            if fund_id not in chosen:
+                chosen.append(fund_id)
+        if not chosen:
+            return []
+        known = set(db.session.scalars(db.select(Fund.id)).all())
+        if any(fund_id not in known for fund_id in chosen):
+            abort(400)
+        return chosen
+
     def filtered_gifts():
         year_id = request.args.get('year_id', type=int)
         person_id = request.args.get('person_id', type=int)
         query = db.select(Gift).where(Gift.status == 'active')
         if year_id: query = query.where(Gift.fiscal_year_id == year_id)
         if person_id: query = query.where(Gift.person_id == person_id)
+        methods = selected_report_methods()
+        if methods:
+            query = query.where(Gift.method.in_(methods))
         for field, bound in (('start_date', 'start'), ('end_date', 'end')):
             raw = request.args.get(field)
             if raw:
@@ -2728,17 +3212,37 @@ def create_app(test_config=None):
                 query = query.where(Gift.date >= parsed if bound == 'start' else Gift.date <= parsed)
         return db.session.scalars(query.order_by(Gift.date, Gift.id)).all()
 
-    def report_gifts():
-        gifts = filtered_gifts()
+    def report_rows():
+        """Gifts for the report, with amounts limited to the selected funds."""
+        fund_ids = set(selected_report_fund_ids())
+        rows = []
+        for gift in filtered_gifts():
+            if fund_ids:
+                parts = [part for part in allocation_fund_rows(gift) if part[0] in fund_ids]
+                if not parts:
+                    continue
+                amount = sum((part[3] for part in parts), Decimal('0'))
+                label = ', '.join(part[2] for part in parts)
+                fund_amounts = [(part[1], part[3]) for part in parts]
+            else:
+                amount = gift.amount
+                label = gift_fund_label(gift)
+                fund_amounts = list(gift_fund_amounts(gift))
+            rows.append({'gift': gift, 'amount': amount, 'label': label, 'fund_amounts': fund_amounts})
         minimum = request.args.get('minimum_total', '').strip()
-        if not minimum: return gifts
+        if not minimum:
+            return rows
         try:
             threshold = Decimal(minimum)
-            if threshold < 0: raise ValueError
-        except (InvalidOperation, ValueError): abort(400)
+            if threshold < 0:
+                raise ValueError
+        except (InvalidOperation, ValueError):
+            abort(400)
         person_totals = {}
-        for gift in gifts: person_totals[gift.person_id] = person_totals.get(gift.person_id, Decimal('0')) + gift.amount
-        return [gift for gift in gifts if person_totals[gift.person_id] >= threshold]
+        for row in rows:
+            person_id = row['gift'].person_id
+            person_totals[person_id] = person_totals.get(person_id, Decimal('0')) + row['amount']
+        return [row for row in rows if person_totals[row['gift'].person_id] >= threshold]
 
     @app.route('/reports')
     @require('reports')
@@ -2750,17 +3254,23 @@ def create_app(test_config=None):
         can_detail = 'detail_reports' in role_perms
         can_statements = 'statements' in role_perms
         persons = db.session.scalars(db.select(Person).order_by(Person.last_name, Person.first_name)).all() if (can_detail or can_statements) else []
-        gifts = report_gifts()
-        total = sum((x.amount for x in gifts), Decimal('0'))
+        rows = report_rows()
+        total = sum((row['amount'] for row in rows), Decimal('0'))
         funds = {}
-        for gift in gifts: funds[gift.fund.name] = funds.get(gift.fund.name, Decimal('0')) + gift.amount
+        for row in rows:
+            for name, amount in row['fund_amounts']:
+                funds[name] = funds.get(name, Decimal('0')) + amount
+        rank = {name: index for index, name in enumerate(DEFAULT_FUNDS)}
+        funds = dict(sorted(funds.items(), key=lambda item: (rank.get(item[0], len(rank)), item[0].lower())))
         monthly = {}
-        for gift in gifts:
-            period = gift.date.strftime('%b %Y')
-            monthly[period] = monthly.get(period, Decimal('0')) + gift.amount
-        detail_gifts = gifts if can_detail else []
-        pager = build_pager(len(detail_gifts)) if can_detail else None
-        page_gifts = detail_gifts[pager['offset']:pager['offset'] + pager['per_page']] if pager else []
+        for row in rows:
+            period = row['gift'].date.strftime('%b %Y')
+            monthly[period] = monthly.get(period, Decimal('0')) + row['amount']
+        detail_rows = rows if can_detail else []
+        pager = build_pager(len(detail_rows)) if can_detail else None
+        page_rows = detail_rows[pager['offset']:pager['offset'] + pager['per_page']] if pager else []
+        selected_methods = selected_report_methods()
+        selected_fund_ids = selected_report_fund_ids()
         filter_args = {
             'year_id': request.args.get('year_id') or None,
             'start_date': request.args.get('start_date') or None,
@@ -2768,35 +3278,47 @@ def create_app(test_config=None):
             'minimum_total': request.args.get('minimum_total') or None,
             'person_id': request.args.get('person_id') or None,
             'per_page': pager['per_page'] if pager else None,
+            'method': selected_methods or None,
+            'fund_id': selected_fund_ids or None,
         }
         audit('view', 'report', summary='aggregate' if not persons else 'detail'); db.session.commit()
         return render_template(
             'reports.html',
             years=years,
             people=persons,
-            gifts=page_gifts,
+            gifts=page_rows,
             total=total,
             funds=funds,
             monthly=monthly,
             selected_year=request.args.get('year_id', type=int),
             pager=pager,
             filter_args=filter_args,
+            payment_methods=GIFT_METHODS,
+            report_funds=funds_in_display_order(db.session.scalars(db.select(Fund)).all()),
+            selected_methods=selected_methods,
+            selected_fund_ids=selected_fund_ids,
         )
 
     @app.route('/reports/export.xlsx')
     @require('detail_reports')
     def report_xlsx():
-        gifts = report_gifts(); wb = Workbook(); ws = wb.active; ws.title = 'Giving'
+        rows = report_rows()
+        fund_ids = selected_report_fund_ids()
+        wb = Workbook(); ws = wb.active; ws.title = 'Giving'
         ws.append(['Date', 'Contributor', 'Address line 1', 'Address line 2', 'City', 'State', 'ZIP', 'Fund', 'Payment method', 'Reference', 'Amount'])
-        for gift in gifts:
+        exported_total = Decimal('0')
+        for row in rows:
+            gift = row['gift']
             person = gift.person
-            ws.append([
-                gift.date.isoformat(), excel_safe(person.name),
-                excel_safe(person.address_line1 or ''), excel_safe(person.address_line2 or ''),
-                excel_safe(person.city or ''), excel_safe(person.state or ''), excel_safe(person.zip_code or ''),
-                excel_safe(gift.fund.name), excel_safe(gift.method), excel_safe(gift.reference), float(gift.amount),
-            ])
-        ws.append(['', '', '', '', '', '', '', '', '', 'Total', float(sum((x.amount for x in gifts), Decimal('0')))])
+            for gift_date, label, line_amount in statement_lines_for_funds(gift, fund_ids):
+                exported_total += line_amount
+                ws.append([
+                    gift_date.isoformat(), excel_safe(person.name),
+                    excel_safe(person.address_line1 or ''), excel_safe(person.address_line2 or ''),
+                    excel_safe(person.city or ''), excel_safe(person.state or ''), excel_safe(person.zip_code or ''),
+                    excel_safe(label), excel_safe(gift.method), excel_safe(gift.reference), float(line_amount),
+                ])
+        ws.append(['', '', '', '', '', '', '', '', '', 'Total', float(exported_total)])
         out = io.BytesIO(); wb.save(out); out.seek(0)
         audit('export', 'report', summary='xlsx'); db.session.commit()
         return send_file(out, download_name='GBBC_giving_report.xlsx', as_attachment=True, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')

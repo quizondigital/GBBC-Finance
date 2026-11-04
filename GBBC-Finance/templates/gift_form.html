@@ -4,12 +4,13 @@
   <div>
     <p class="eyebrow">Giving records</p>
     <h1>{{ 'Edit contribution' if gift else 'Record contribution' }}</h1>
-    <p class="muted">Search for the contributor and enter the gift details.</p>
+    <p class="muted">Distribute the gift across funds and their beneficiaries.</p>
   </div>
 </div>
 <section class="card form-card">
   <form method="post" class="form-grid" id="gift-form">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="allocations_json" id="allocations_json" value="{{ allocation_json }}">
     <label class="person-search-field span-2">Contributor <em>required</em>
       <input type="hidden" name="person_id" id="person_id" value="{{ selected_person.id if selected_person else '' }}" required>
       <div class="person-search" data-search-url="{{ people_search_url }}">
@@ -39,28 +40,79 @@
     <label>Date <em>required</em>
       <input name="date" type="date" required value="{{ gift.date.isoformat() if gift else today.isoformat() }}">
     </label>
-    <label>Amount <em>required</em>
-      <input name="amount" type="number" min="0.01" step="0.01" required value="{{ gift.amount if gift else '' }}">
-    </label>
-    <label>Fund <em>required</em>
-      <select name="fund_id" required>
-        {% for fund in funds %}
-        <option value="{{ fund.id }}" {{ 'selected' if (gift and gift.fund_id == fund.id) or (not gift and fund.id == default_fund_id) }}>{{ fund.name }}</option>
-        {% endfor %}
-      </select>
+    <label>Total gift amount ($) <em>required</em>
+      <input name="amount" id="gift-total" type="number" min="0.01" step="0.01" required value="{{ gift.amount if gift else '' }}">
     </label>
     <label>Payment method <em>required</em>
-      <select name="method" required>
+      <select name="method" id="gift-method" required>
         {% for method in ['Check','Cash','Online','Other'] %}
         <option {{ 'selected' if gift and gift.method == method }}>{{ method }}</option>
         {% endfor %}
       </select>
     </label>
-    <label>Reference (e.g. Check #)
-      <input name="reference" value="{{ gift.reference if gift else '' }}">
+    <label class="span-2" id="reference-field"><span id="reference-label">Check number</span> <em>optional</em>
+      <input name="reference" id="reference-input" value="{{ gift.reference if gift else '' }}">
     </label>
-    <label>Note
-      <input name="note" value="{{ gift.note if gift else '' }}">
+    <div class="span-2 split-section">
+      <div class="split-head">
+        <div>
+          <h2>Funds &amp; beneficiaries</h2>
+          <p class="muted">Choose a fund, then assign amounts to its sub-funds.</p>
+        </div>
+        <div class="split-head-side">
+          <span class="split-count" id="split-count"></span>
+          {% if can('subfunds') %}<a href="{{ url_for('subfunds') }}">Manage sub-funds</a>{% endif %}
+        </div>
+      </div>
+      <div id="fund-blocks">
+        {% for block in allocation_state %}
+        <section class="fund-block" data-fund-block>
+          <div class="fund-block-head">
+            <label>Fund
+              <select class="fund-select">
+                {% for fund in funds %}
+                <option value="{{ fund.id }}" {{ 'selected' if fund.id == block.fund_id }}>{{ fund.name }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <label>Amount ($)
+              <input class="fund-amount" type="number" min="0.01" step="0.01" value="{{ block.amount }}">
+            </label>
+            <button class="icon-button remove-fund" type="button" aria-label="Remove fund">×</button>
+          </div>
+          <div class="subfund-list">
+            {% for line in block.subfunds %}
+            <div class="subfund-row" data-subfund-row>
+              <label>Sub-fund / beneficiary
+                <select class="subfund-select">
+                  <option value="">Select sub-fund</option>
+                  {% for fund in fund_catalog if fund.id == block.fund_id %}
+                    {% for sub in fund.subfunds %}
+                    <option value="{{ sub.id }}" {{ 'selected' if sub.id == line.subfund_id }}>{{ sub.name }}</option>
+                    {% endfor %}
+                  {% endfor %}
+                </select>
+              </label>
+              <label>Amount ($)
+                <input class="subfund-amount" type="number" min="0.01" step="0.01" value="{{ line.amount }}">
+              </label>
+              <button class="icon-button remove-subfund" type="button" aria-label="Remove sub-fund">×</button>
+            </div>
+            {% endfor %}
+          </div>
+          <p class="fund-balance" hidden></p>
+          <button class="text-button add-subfund" type="button">+ Add sub-fund</button>
+        </section>
+        {% endfor %}
+      </div>
+      <button class="text-button add-fund" type="button" id="add-fund">+ Add main fund</button>
+      <div class="allocation-bar" id="allocation-bar">
+        <span id="allocation-text">Allocated $0.00 / $0.00</span>
+        <strong id="allocation-flag">Enter fund amounts</strong>
+      </div>
+    </div>
+    <label class="span-2">Note <em>optional</em>
+      <textarea name="note" rows="3" placeholder="Add a note about this gift">{{ gift.note if gift else '' }}</textarea>
     </label>
     {% if gift %}{% include '_audit_reason.html' %}{% endif %}
     <div class="form-actions">
@@ -69,5 +121,40 @@
     </div>
   </form>
 </section>
+<template id="fund-block-template">
+  <section class="fund-block" data-fund-block>
+    <div class="fund-block-head">
+      <label>Fund
+        <select class="fund-select">
+          {% for fund in funds %}
+          <option value="{{ fund.id }}">{{ fund.name }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Amount ($)
+        <input class="fund-amount" type="number" min="0.01" step="0.01" value="">
+      </label>
+      <button class="icon-button remove-fund" type="button" aria-label="Remove fund">×</button>
+    </div>
+    <div class="subfund-list"></div>
+    <p class="fund-balance" hidden></p>
+    <button class="text-button add-subfund" type="button">+ Add sub-fund</button>
+  </section>
+</template>
+<template id="subfund-row-template">
+  <div class="subfund-row" data-subfund-row>
+    <label>Sub-fund / beneficiary
+      <select class="subfund-select">
+        <option value="">Select sub-fund</option>
+      </select>
+    </label>
+    <label>Amount ($)
+      <input class="subfund-amount" type="number" min="0.01" step="0.01" value="">
+    </label>
+    <button class="icon-button remove-subfund" type="button" aria-label="Remove sub-fund">×</button>
+  </div>
+</template>
+<script type="application/json" id="fund-catalog">{{ fund_catalog|tojson }}</script>
 <script src="{{ url_for('static', filename='person_search.js') }}" defer></script>
+<script src="{{ url_for('static', filename='gift_split.js') }}" defer></script>
 {% endblock %}

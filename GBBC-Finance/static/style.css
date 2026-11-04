@@ -33,7 +33,6 @@ details p{margin:10px 0}details pre{overflow:auto;background:#f3f6f3;border:1px 
 .auth-switch{margin-top:18px;font-size:14px;color:#66746a;text-align:center}
 .auth-switch a{font-weight:700}
 .signup-card{width:min(100%,520px)}
-.role-notes{margin:0;padding-left:18px;color:#66746a;font-size:13px;line-height:1.45;display:grid;gap:4px}
 .approval-actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
 
 .password-field{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center}
@@ -92,3 +91,36 @@ button:disabled{opacity:.55;cursor:not-allowed}
 
 .restore-confirm{border:1px solid #d7b7b0;background:#fff8f6}
 .restore-summary{margin:0 0 16px;padding-left:18px;display:grid;gap:6px}
+
+.split-section{display:grid;gap:14px;padding-top:8px}
+.split-head,.split-head-side,.fund-block-head,.subfund-row,.subfund-admin-row,.subfund-edit,.subfund-add{display:flex;gap:12px;align-items:center}
+.split-head{justify-content:space-between;align-items:flex-end}
+.split-head h2{margin:0;font-size:18px}
+.split-head p{margin:4px 0 0}
+.split-head-side{gap:16px;align-items:center;color:#1b624c;font-size:14px}
+.split-count{color:#1b624c;background:#e7f3ec;border-radius:999px;padding:4px 10px;font-size:13px;font-weight:650}
+.fund-block{border:1px solid #e4eee8;background:#f4faf6;border-radius:16px;padding:14px}
+.fund-block-head{align-items:end}
+.fund-block-head label,.subfund-row label{flex:1;display:grid;gap:6px;font-size:13px;color:#5d6d64}
+.fund-block-head input,.fund-block-head select,.subfund-row input,.subfund-row select{background:#fff}
+.fund-amount,.subfund-amount{text-align:right}
+.subfund-list{display:grid;gap:10px;margin:12px 0}
+.subfund-row{align-items:end}
+.icon-button{width:36px;height:36px;border-radius:10px;border:1px solid #e4e0d8;background:#fff;color:#6b7a72;font-size:20px;line-height:1}
+.icon-button:disabled{opacity:.4;cursor:default}
+.fund-balance{margin:0 0 8px;color:#6b7a72;font-size:13px}
+.add-fund,.add-subfund{padding-left:0}
+.allocation-bar{display:flex;justify-content:space-between;gap:12px;align-items:center;border-radius:12px;padding:12px 14px;background:#f4f1ea;color:#3e4a44}
+.allocation-bar.balanced{background:#e7f3ec;color:#1b624c}
+.allocation-bar.short{background:#f8f1e4;color:#8a6232}
+.allocation-bar.over{background:#fdecec;color:#8d3030}
+.subfund-admin{display:grid;gap:16px}
+.subfund-card .card-head{align-items:baseline}
+.subfund-admin-row,.subfund-add{padding:12px 18px;border-top:1px solid #eeeae3}
+.subfund-edit{flex:1}
+.subfund-edit input,.subfund-add input{flex:1}
+.subfund-add{margin-top:4px}
+.filter-multi{display:grid;gap:7px;font-size:14px;font-weight:650;min-width:220px}
+.filter-multi em{font-size:11px;font-style:normal;font-weight:500;color:#7c8880}
+.filter-choice-list{display:grid;gap:6px;border:1px solid #d8dfd8;border-radius:9px;background:#fff;padding:8px 10px}
+.filter-choice-list .checkbox-row{font-weight:500}

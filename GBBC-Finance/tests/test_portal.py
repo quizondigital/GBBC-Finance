@@ -238,8 +238,8 @@ def test_leader_suppression_and_server_denial(client):
     dashboard = client.get('/').data
     assert b'$123.00' in dashboard and b'Ada Member' not in dashboard
     assert b'Giving by fund' in dashboard and b'General Fund' in dashboard
-    assert b'Contributions</span>' not in dashboard and b'Administration</span>' not in dashboard
-    for path in ['/contributions', '/reports/export.xlsx', '/admin/users', '/admin/roles', '/people/new']:
+    assert b'Contributions</span>' not in dashboard and b'Sub-funds</span>' not in dashboard and b'Administration</span>' not in dashboard
+    for path in ['/contributions', '/subfunds', '/reports/export.xlsx', '/admin/users', '/admin/roles', '/people/new']:
         assert client.get(path).status_code == 403
     report = client.get('/reports').data
     assert b'$123.00' in report and b'Ada Member' not in report
@@ -396,7 +396,7 @@ def test_login_limit(client):
 
 def test_all_primary_pages_render(client):
     login(client, 'sally@example.org')
-    paths = ['/', '/people', '/people/new', '/people/1/edit', '/people/import', '/contributions', '/contributions/import', '/contributions/new', '/reports', '/admin/users', '/admin/users/1/edit', '/admin/roles', '/admin/fiscal', '/admin/settings', '/admin/feedback', '/admin/audit', '/admin/backup', '/help']
+    paths = ['/', '/people', '/people/new', '/people/1/edit', '/people/import', '/contributions', '/contributions/import', '/contributions/new', '/subfunds', '/reports', '/admin/users', '/admin/users/1/edit', '/admin/roles', '/admin/fiscal', '/admin/settings', '/admin/feedback', '/admin/audit', '/admin/backup', '/help']
     for path in paths:
         response = client.get(path)
         assert response.status_code == 200, path
@@ -499,6 +499,8 @@ def test_finance_staff_signup_role_cannot_access_users_admin(client):
     assert b'/reports/statements/1.pdf' in reports
     assert client.get('/reports/statements/1.pdf').status_code == 200
     assert client.get('/utilities').status_code == 200
+    assert client.get('/subfunds').status_code == 200
+    assert b'Sub-funds</span>' in client.get('/').data
     assert client.get('/help').status_code == 200
     assert client.get('/admin/users').status_code == 403
     home = client.get('/').data
@@ -1082,3 +1084,158 @@ def test_person_names_are_title_cased_on_save_and_import(client):
         assert ada.first_name == 'Ada' and ada.last_name == 'Member'
         mary = db.session.scalar(db.select(Person).filter_by(last_name="O'Brien"))
         assert mary is not None and mary.first_name == 'Mary Ann'
+
+def test_split_contribution_across_funds_and_subfunds(client):
+    import json
+    from decimal import Decimal
+    from app import SubFund, gift_statement_lines
+    login(client, 'sally@example.org')
+    page = client.get('/contributions/new').data.decode()
+    assert 'Funds &amp; beneficiaries' in page or 'Funds & beneficiaries' in page
+    assert 'Add main fund' in page
+    assert page.index('General Fund') < page.index('Missions Fund')
+    with client.application.app_context():
+        general = db.session.scalar(db.select(Fund).filter_by(name='General Fund'))
+        missions = db.session.scalar(db.select(Fund).filter_by(name='Missions Fund'))
+        general_id, missions_id = general.id, missions.id
+    for fund_id, name in (
+        (general_id, 'Love Gift'),
+        (general_id, 'Pastor Pao Tuition'),
+        (missions_id, 'Pastor Paul'),
+        (missions_id, 'BBSI'),
+    ):
+        created = client.post('/subfunds', data={
+            'csrf_token': token(client), 'action': 'create', 'fund_id': str(fund_id), 'name': name,
+        }, follow_redirects=True)
+        assert f'Added {name}'.encode() in created.data
+    duplicate = client.post('/subfunds', data={
+        'csrf_token': token(client), 'action': 'create', 'fund_id': str(general_id), 'name': 'love gift',
+    }, follow_redirects=True)
+    assert b'already has a sub-fund' in duplicate.data
+    with client.application.app_context():
+        subs = {sub.name: sub.id for sub in db.session.scalars(db.select(SubFund)).all()}
+    payload = [
+        {'fund_id': general_id, 'amount': '200.00', 'subfunds': [
+            {'subfund_id': subs['Love Gift'], 'amount': '100.00'},
+            {'subfund_id': subs['Pastor Pao Tuition'], 'amount': '100.00'},
+        ]},
+        {'fund_id': missions_id, 'amount': '300.00', 'subfunds': [
+            {'subfund_id': subs['Pastor Paul'], 'amount': '150.00'},
+            {'subfund_id': subs['BBSI'], 'amount': '150.00'},
+        ]},
+    ]
+    short = client.post('/contributions/new', data={
+        'csrf_token': token(client), 'person_id': '1', 'fiscal_year_id': '1', 'date': '2026-11-03',
+        'amount': '500.00', 'method': 'Check', 'reference': '1042',
+        'allocations_json': json.dumps([{
+            'fund_id': general_id, 'amount': '200.00',
+            'subfunds': [
+                {'subfund_id': subs['Love Gift'], 'amount': '100.00'},
+                {'subfund_id': subs['Pastor Pao Tuition'], 'amount': '50.00'},
+            ],
+        }]),
+    }, follow_redirects=True)
+    assert b'Sub-funds for General Fund must add up' in short.data
+    saved = client.post('/contributions/new', data={
+        'csrf_token': token(client), 'person_id': '1', 'fiscal_year_id': '1', 'date': '2026-11-03',
+        'amount': '500.00', 'method': 'Check', 'reference': '1042', 'note': 'Split Sunday gift',
+        'allocations_json': json.dumps(payload),
+    }, follow_redirects=True)
+    assert b'Contribution saved' in saved.data
+    assert b'General Fund (Love Gift, Pastor Pao Tuition)' in saved.data
+    assert b'Missions Fund (Pastor Paul, BBSI)' in saved.data
+    with client.application.app_context():
+        gift = db.session.scalar(db.select(Gift).where(Gift.reference == '1042'))
+        assert gift.amount == Decimal('500.00')
+        assert len(gift.allocations) == 4
+        lines = gift_statement_lines(gift)
+        assert sum((line[2] for line in lines), Decimal('0')) == Decimal('500.00')
+        assert any('Love Gift' in line[1] for line in lines)
+        gift_id = gift.id
+    edit = client.get(f'/contributions/{gift_id}/edit').data
+    assert b'Pastor Paul' in edit and b'BBSI' in edit and b'Love Gift' in edit
+    report = client.get('/reports?year_id=1').data
+    assert b'$200.00' in report and b'$300.00' in report
+    blocked = client.post('/subfunds', data={
+        'csrf_token': token(client), 'action': 'delete', 'subfund_id': str(subs['Love Gift']),
+        'audit_reason': 'No longer used',
+    }, follow_redirects=True)
+    assert b'because contribution records use it' in blocked.data
+    renamed = client.post('/subfunds', data={
+        'csrf_token': token(client), 'action': 'update', 'subfund_id': str(subs['BBSI']),
+        'name': 'BBSI General', 'audit_reason': 'Clarify beneficiary',
+    }, follow_redirects=True)
+    assert b'Renamed BBSI to BBSI General' in renamed.data
+    removed = client.post('/subfunds', data={
+        'csrf_token': token(client), 'action': 'delete', 'subfund_id': str(subs['Pastor Paul']),
+        'audit_reason': 'Remove unused label',
+    }, follow_redirects=True)
+    assert b'because contribution records use it' in removed.data
+    with client.application.app_context():
+        spare = SubFund(fund_id=general_id, name='Unused Desk Fund', active=True)
+        db.session.add(spare)
+        db.session.commit()
+        spare_id = spare.id
+    deleted = client.post('/subfunds', data={
+        'csrf_token': token(client), 'action': 'delete', 'subfund_id': str(spare_id),
+        'audit_reason': 'Created by mistake',
+    }, follow_redirects=True)
+    assert b'Deleted General Fund / Unused Desk Fund' in deleted.data
+
+def test_reports_filter_methods_and_funds(client):
+    from decimal import Decimal
+    from io import BytesIO
+    from openpyxl import load_workbook
+    from app import GiftAllocation
+    login(client, 'sally@example.org')
+    with client.application.app_context():
+        general = db.session.scalar(db.select(Fund).filter_by(name='General Fund'))
+        missions = db.session.scalar(db.select(Fund).filter_by(name='Missions Fund'))
+        db.session.add_all([
+            Gift(person_id=1, fiscal_year_id=1, fund_id=general.id, date=date(2026, 2, 1), amount=40, method='Check', entered_by_id=1),
+            Gift(person_id=1, fiscal_year_id=1, fund_id=missions.id, date=date(2026, 2, 2), amount=25, method='Cash', entered_by_id=1),
+            Gift(person_id=1, fiscal_year_id=1, fund_id=general.id, date=date(2026, 2, 3), amount=15, method='Online', entered_by_id=1),
+        ])
+        split = Gift(person_id=1, fiscal_year_id=1, fund_id=general.id, date=date(2026, 2, 4), amount=500, method='Check', entered_by_id=1)
+        db.session.add(split)
+        db.session.flush()
+        db.session.add_all([
+            GiftAllocation(gift=split, fund_id=general.id, amount=Decimal('200.00'), sort_order=0),
+            GiftAllocation(gift=split, fund_id=missions.id, amount=Decimal('300.00'), sort_order=1),
+        ])
+        db.session.commit()
+        general_id, missions_id = general.id, missions.id
+    form = client.get('/reports').data.decode()
+    assert 'Payment method' in form and 'name="method"' in form
+    assert 'name="fund_id"' in form and 'General Fund' in form and 'Missions Fund' in form
+    methods = client.get('/reports?method=Check&method=Cash').data.decode()
+    assert '$565.00' in methods
+    assert '$15.00' not in methods
+    assert 'method=Check' in methods and 'method=Cash' in methods
+    funds = client.get(f'/reports?fund_id={general_id}&fund_id={missions_id}').data.decode()
+    assert '$580.00' in funds
+    general_only = client.get(f'/reports?fund_id={general_id}').data.decode()
+    assert '$255.00' in general_only
+    assert '<span>Missions Fund</span>' not in general_only
+    assert '$500.00' not in general_only
+    partial = client.get(f'/reports?method=Check&fund_id={missions_id}').data.decode()
+    assert '$300.00' in partial
+    assert '$40.00' not in partial and '$200.00' not in partial and '$500.00' not in partial
+    assert 'Missions Fund' in partial
+    assert client.get('/reports?method=Wire').status_code == 400
+    assert client.get('/reports?fund_id=99999').status_code == 400
+    xlsx = client.get(f'/reports/export.xlsx?method=Check&fund_id={missions_id}')
+    assert xlsx.status_code == 200
+    sheet = load_workbook(BytesIO(xlsx.data)).active
+    data_rows = list(sheet.iter_rows(min_row=2, max_row=sheet.max_row - 1, values_only=True))
+    assert len(data_rows) == 1
+    assert data_rows[0][7] == 'Missions Fund'
+    assert data_rows[0][8] == 'Check'
+    assert data_rows[0][10] == 300
+    assert sheet.cell(sheet.max_row, 11).value == 300
+    client.post('/logout', data={'csrf_token': token(client)})
+    login(client, 'chris@example.org')
+    leader = client.get(f'/reports?method=Check&method=Online&fund_id={general_id}').data.decode()
+    assert '$255.00' in leader
+    assert 'Ada Member' not in leader
+    assert client.get('/reports?person_id=1').status_code == 403

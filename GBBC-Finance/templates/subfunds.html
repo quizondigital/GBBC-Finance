@@ -1,0 +1,50 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="heading">
+  <div>
+    <p class="eyebrow">Giving records</p>
+    <h1>Sub-funds</h1>
+    <p class="muted">Create, rename, and remove the beneficiaries inside each main fund.</p>
+  </div>
+</div>
+<div class="subfund-admin">
+  {% for fund in funds %}
+  <section class="card subfund-card">
+    <div class="card-head">
+      <h2>{{ fund.name }}</h2>
+      <p>{{ fund.subfunds|length }} sub-fund{{ '' if fund.subfunds|length == 1 else 's' }}</p>
+    </div>
+    {% for sub in fund.subfunds %}
+    <div class="subfund-admin-row">
+      <form method="post" class="subfund-edit" onsubmit="return window.promptAuditReason(this);">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="action" value="update">
+        <input type="hidden" name="subfund_id" value="{{ sub.id }}">
+        <input type="hidden" name="audit_reason" value="">
+        <input name="name" value="{{ sub.name }}" required maxlength="100" aria-label="Name for {{ sub.name }}">
+        <button class="button secondary" type="submit">Save</button>
+      </form>
+      <form method="post" class="inline" onsubmit="if(!confirm('Delete this sub-fund?')) return false; return window.promptAuditReason(this);">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="action" value="delete">
+        <input type="hidden" name="subfund_id" value="{{ sub.id }}">
+        <input type="hidden" name="audit_reason" value="">
+        <button class="text-button danger" type="submit">Delete</button>
+      </form>
+    </div>
+    {% else %}
+    <p class="empty">No sub-funds in {{ fund.name }} yet.</p>
+    {% endfor %}
+    <form method="post" class="subfund-add">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <input type="hidden" name="action" value="create">
+      <input type="hidden" name="fund_id" value="{{ fund.id }}">
+      <input name="name" placeholder="New sub-fund name" maxlength="100" required aria-label="New sub-fund for {{ fund.name }}">
+      <button class="button" type="submit">Add sub-fund</button>
+    </form>
+  </section>
+  {% else %}
+  <section class="card"><p class="empty">No funds are available.</p></section>
+  {% endfor %}
+</div>
+{% endblock %}

@@ -20,6 +20,7 @@
   </div>
   {% if can('gift_write') %}
   <div class="actions">
+    {% if can('subfunds') %}<a class="button secondary" href="{{ url_for('subfunds') }}">Sub-funds</a>{% endif %}
     <a class="button secondary" href="{{ url_for('gifts_import') }}">Import CSV</a>
     <a class="button" href="{{ url_for('gift_new') }}">＋ Record contribution</a>
   </div>
@@ -45,7 +46,7 @@
         <tr>
           <td>{{ gift.date.isoformat() }}</td>
           <td><strong>{{ gift.person.name }}</strong></td>
-          <td>{{ gift.fund.name }}</td>
+          <td>{{ gift_fund_label(gift) }}</td>
           <td>{{ gift.method }} {{ gift.reference }}</td>
           <td>${{ '{:,.2f}'.format(gift.amount) }}</td>
           <td>{{ 'Yes' if gift.reconciled else 'No' }}</td>
